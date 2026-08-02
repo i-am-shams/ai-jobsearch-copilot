@@ -64,10 +64,11 @@ ai-jobsearch-copilot/
 9. ✅ Connection string wired (`Host=localhost;Port=5433;...`), DbContext registered in `Program.cs`
 10. ✅ Migration created and applied (`InitialCreate`) — confirmed tables exist via `psql \dt`: `Users`, `Applications`, `MatchResults`, `__EFMigrationsHistory`
 11. ✅ Auth infrastructure: `AuthService` (BCrypt hash/verify, JWT generation), JWT middleware registered in `Program.cs` in correct order (`UseAuthentication()` before `UseAuthorization()`). Build succeeds, 0 warnings/errors. **No endpoints yet** — just wiring.
+12. ✅ `AuthController` created — `/api/auth/register` and `/api/auth/login` endpoints. Register checks email uniqueness (app-level + DB unique index), hashes via BCrypt, returns JWT immediately. Login re-verifies password, returns fresh token. Tested via curl — confirmed working, valid JWT returned with correct claims (sub, email, issuer, audience).
 
-## Next Step (12)
+## Next Step (13)
 
-Build the actual `/api/auth/register` and `/api/auth/login` controller endpoints that use `AuthService`. Not yet started.
+Build the `Applications` CRUD endpoints (create/list/get by id), scoped to the logged-in user via `[Authorize]` and the `sub` claim from the JWT. This is where a submitted resume+JD pairing actually gets saved — currently only auth exists, no core feature endpoints yet.
 
 ## Known Gotchas / Things That Tripped Us Up (don't repeat)
 
