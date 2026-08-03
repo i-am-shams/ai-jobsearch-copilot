@@ -2,7 +2,7 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Step 11 complete, about to start Step 12
+**Last updated:** Step 13 complete, about to start Step 14
 **Reference doc:** `Full_Stack_Developer_Transition_Roadmap.md` (contains the full 3-project roadmap; this project is Project 1)
 
 ---
@@ -66,9 +66,7 @@ ai-jobsearch-copilot/
 11. ✅ Auth infrastructure: `AuthService` (BCrypt hash/verify, JWT generation), JWT middleware registered in `Program.cs` in correct order (`UseAuthentication()` before `UseAuthorization()`). Build succeeds, 0 warnings/errors. **No endpoints yet** — just wiring.
 12. ✅ `AuthController` created — `/api/auth/register` and `/api/auth/login` endpoints. Register checks email uniqueness (app-level + DB unique index), hashes via BCrypt, returns JWT immediately. Login re-verifies password, returns fresh token. Tested via curl — confirmed working, valid JWT returned with correct claims (sub, email, issuer, audience).
 
-## Next Step (13)
-
-Build the `Applications` CRUD endpoints (create/list/get by id), scoped to the logged-in user via `[Authorize]` and the `sub` claim from the JWT. This is where a submitted resume+JD pairing actually gets saved — currently only auth exists, no core feature endpoints yet.
+13. ✅ Build the `Applications` CRUD endpoints (create/list/get by id), scoped to the logged-in user via `[Authorize]` and the `sub` claim from the JWT. This is where a submitted resume+JD pairing actually gets saved — currently only auth exists, no core feature endpoints yet.
 
 ## Known Gotchas / Things That Tripped Us Up (don't repeat)
 
