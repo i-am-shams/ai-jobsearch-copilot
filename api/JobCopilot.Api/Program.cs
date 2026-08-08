@@ -19,6 +19,9 @@ builder.Services.AddScoped<AuthService>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        // Preserve original JWT claim names (e.g. "sub") instead of ASP.NET Core's
+        // default remapping to legacy long-form XML claim types.
+        options.MapInboundClaims = false;
         options.SaveToken = true;
         options.TokenValidationParameters = new TokenValidationParameters
         {
@@ -30,18 +33,6 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidAudience = builder.Configuration["Jwt:Audience"],
             IssuerSigningKey = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!))
-        };
-        options.Events = new JwtBearerEvents
-        {
-            OnTokenValidated = context =>
-            {
-                if (context.SecurityToken is JwtSecurityToken token)
-                {
-                    var identity = new ClaimsIdentity(token.Claims, "Bearer");
-                    context.Principal = new ClaimsPrincipal(identity);
-                }
-                return Task.CompletedTask;
-            }
         };
     });
 

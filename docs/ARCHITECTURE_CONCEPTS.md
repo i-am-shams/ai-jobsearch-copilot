@@ -304,3 +304,39 @@ The JWT is stored **only in React state (in memory)** via Context — deliberate
 - Created: `frontend/src/api/client.ts`
 - Created: `frontend/src/context/AuthContext.tsx`
 - Modified: `frontend/src/main.tsx` (wrapped `<App />` in `<AuthProvider>`)
+
+
+---
+
+## Verification Pass — Steps 1–16
+
+A full review pass was done after Step 16, reading every file directly rather than assuming prior chat-pasted code matched what was actually written (Copilot was used to write the code independently past Step 14).
+
+**Found: `ApplicationsController` had drifted from spec.** A defensive `GetCurrentUserId()` method had been introduced, manually re-parsing the raw JWT from the `Authorization` header as a fallback when the standard claims lookup returned null — plus an unused `IConfiguration` dependency pulled in alongside it.
+
+### Architectural Viewpoint & Arguments
+
+**Root cause:** ASP.NET Core's JWT Bearer middleware, by default, silently **remaps** standard short-form JWT claim names (like `sub`) to legacy long-form XML claim type URIs internally, via `JwtSecurityTokenHandler.DefaultInboundClaimTypeMap`. This means `User.FindFirstValue(JwtRegisteredClaimNames.Sub)` — the clean, spec-correct lookup — can return `null` even though the token is perfectly valid, because the claim now lives under a different internal type name.
+
+Two separate, uncoordinated fixes had been layered on top of this same root cause:
+1. `Program.cs` had gained an `OnTokenValidated` event handler that manually rebuilt the `ClaimsPrincipal` from the token's raw claims, bypassing the remapping.
+2. `ApplicationsController` had *also* gained its own independent fallback: manually re-parsing the JWT from the raw `Authorization` header if the claims lookup came back empty.
+
+Both fixes address the same problem from different angles — meaning the controller-level fix was pure redundant complexity sitting on top of an already-working fix, and represented unnecessary custom security-sensitive code (manually parsing tokens outside the framework's own pipeline).
+
+**The correct, minimal fix:** a single documented option, `options.MapInboundClaims = false`, set once on the JWT Bearer configuration in `Program.cs`. This tells the middleware "don't remap claim names, keep them exactly as issued" — addressing the actual root cause in one line, at the framework level, rather than working around the symptom in application code.
+
+**Why this matters as a lesson, not just a bugfix:** this is a genuine, realistic example of AI-assisted development's failure mode — when a coding assistant (Copilot, in this case) hits an error, its instinct is often to patch around the *symptom* locally (add a fallback, catch an exception, retry a different way) rather than diagnose and fix the *root cause* at the source. Catching and correcting this kind of drift is a core part of what "AI-assisted development with human review" actually means in practice, not just accepting whatever compiles.
+
+### Plain-Language Definitions
+
+- **Claim type remapping:** ASP.NET Core's JWT handling has, for historical/interoperability reasons, a built-in table that renames certain incoming claim names to different internal identifiers before your code ever sees them. It's a legacy default most developers don't know exists until it silently breaks something that "should" work.
+- **Defense-in-depth vs. redundant complexity:** these can look similar (both add extra code "just in case") but are different in kind. Defense-in-depth (like Step 8's dual email-uniqueness checks) protects against *genuinely different* failure modes at different layers. Redundant complexity — like the controller's JWT-reparsing fallback — exists only because the *same* underlying bug wasn't correctly diagnosed the first time. The fix for the latter is always to remove it once the real root cause is addressed, not to keep both "just in case."
+
+### File Mapping
+
+- Modified: `Program.cs` — added `options.MapInboundClaims = false`, removed the `OnTokenValidated` event handler (no longer needed)
+- Modified: `Controllers/ApplicationsController.cs` — reverted `GetCurrentUserId()` back to the original one-line `CurrentUserId` property; removed unused `IConfiguration` dependency
+- Deleted: `Controllers/WeatherForecastController.cs`, `WeatherForecast.cs` — unused scaffold leftovers from `dotnet new webapi`, never removed
+- Verified via rebuild: 0 warnings, 0 errors
+- Verified via manual browser test: login/register confirmed still working after both changes

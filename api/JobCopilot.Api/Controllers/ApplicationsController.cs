@@ -14,13 +14,8 @@ namespace JobCopilot.Api.Controllers;
 public class ApplicationsController : ControllerBase
 {
     private readonly AppDbContext _db;
-    private readonly IConfiguration _config;
 
-    public ApplicationsController(AppDbContext db, IConfiguration config)
-    {
-        _db = db;
-        _config = config;
-    }
+    public ApplicationsController(AppDbContext db) => _db = db;
 
     public record CreateApplicationRequest(
         string JobTitle,
@@ -36,43 +31,15 @@ public class ApplicationsController : ControllerBase
         string MatchStatus,
         int? MatchScore);
 
-    private Guid GetCurrentUserId()
-    {
-        // Try to get from User claims first
-        var subClaim = User.FindFirstValue(JwtRegisteredClaimNames.Sub)
-            ?? User.FindFirstValue("sub")
-            ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
-        
-        // If not found, try to parse the token directly
-        if (string.IsNullOrEmpty(subClaim))
-        {
-            var authHeader = Request.Headers.Authorization.ToString();
-            if (authHeader.StartsWith("Bearer "))
-            {
-                var token = authHeader.Substring("Bearer ".Length);
-                var handler = new JwtSecurityTokenHandler();
-                try
-                {
-                    var jwtToken = handler.ReadToken(token) as JwtSecurityToken;
-                    subClaim = jwtToken?.Claims.FirstOrDefault(c => c.Type == "sub")?.Value;
-                }
-                catch { }
-            }
-        }
-        
-        if (string.IsNullOrEmpty(subClaim))
-            throw new UnauthorizedAccessException("Sub claim not found in token");
-        
-        return Guid.Parse(subClaim);
-    }
+    private Guid CurrentUserId =>
+        Guid.Parse(User.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
 
     [HttpPost]
     public async Task<ActionResult<ApplicationResponse>> Create(CreateApplicationRequest req)
     {
-        var userId = GetCurrentUserId();
         var application = new Application
         {
-            UserId = userId,
+            UserId = CurrentUserId,
             JobTitle = req.JobTitle,
             CompanyName = req.CompanyName,
             ResumeText = req.ResumeText,
@@ -98,9 +65,8 @@ public class ApplicationsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<List<ApplicationResponse>>> List()
     {
-        var userId = GetCurrentUserId();
         var apps = await _db.Applications
-            .Where(a => a.UserId == userId)
+            .Where(a => a.UserId == CurrentUserId)
             .Include(a => a.MatchResult)
             .OrderByDescending(a => a.CreatedAt)
             .Select(a => new ApplicationResponse(
@@ -114,10 +80,9 @@ public class ApplicationsController : ControllerBase
     [HttpGet("{id}")]
     public async Task<ActionResult<ApplicationResponse>> GetById(Guid id)
     {
-        var userId = GetCurrentUserId();
         var app = await _db.Applications
             .Include(a => a.MatchResult)
-            .FirstOrDefaultAsync(a => a.Id == id && a.UserId == userId);
+            .FirstOrDefaultAsync(a => a.Id == id && a.UserId == CurrentUserId);
 
         if (app is null) return NotFound();
 
