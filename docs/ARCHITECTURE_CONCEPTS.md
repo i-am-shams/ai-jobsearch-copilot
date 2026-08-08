@@ -340,3 +340,66 @@ Both fixes address the same problem from different angles — meaning the contro
 - Deleted: `Controllers/WeatherForecastController.cs`, `WeatherForecast.cs` — unused scaffold leftovers from `dotnet new webapi`, never removed
 - Verified via rebuild: 0 warnings, 0 errors
 - Verified via manual browser test: login/register confirmed still working after both changes
+
+
+---
+
+## Step 19: Create Application Form + List View
+
+### Architectural Viewpoint & Arguments
+
+`App.tsx` owns the `applications` list state; `ApplicationForm` only knows how to submit and calls an `onCreated` callback afterward — it doesn't manage the list itself.
+
+- **Why this way ("lifting state up"):** each component does exactly one job. The form's only responsibility is capturing input and submitting; the list's only responsibility is displaying data it's given; `App.tsx` coordinates between them. This is the standard React pattern for sibling components that need to affect each other — a shared parent owns the state, children receive data via props and report events via callbacks.
+- `useCallback` wraps `fetchApplications`, and it's listed as a dependency of the `useEffect` that auto-loads applications after login.
+- **Why this matters, specifically:** without `useCallback`, `fetchApplications` would be a *new function* on every render, which would make the `useEffect` think its dependency changed every time, re-running itself, causing another render, creating another new function — an infinite loop. `useCallback` memoizes the function so it's only recreated when its own dependencies change (here, none — so it's created once).
+- A plain HTML `<table>` was used for the list rather than a UI/table library.
+- **Why:** no current requirement (sorting, pagination, filtering) justifies the added dependency weight yet. Right-sized tooling for the current need, not anticipatory over-engineering.
+
+### Plain-Language Definitions
+
+- **Lifting state up:** moving shared state to the nearest common parent of the components that need it, so they can coordinate through props/callbacks instead of trying to directly communicate with each other (which React doesn't support between siblings).
+- **`useCallback`:** a React hook that returns the *same* function reference across re-renders (as long as its dependency array hasn't changed), instead of a fresh function being created every render. Needed specifically when a function is used as a dependency of another hook (like `useEffect`) or passed to a memoized child component.
+- **Controlled input:** an `<input>`/`<textarea>` whose value is driven entirely by React state (`value={form.jobTitle}`, updated via `onChange`) rather than the DOM managing its own value internally. This is why every field in `ApplicationForm` reads from and writes to the `form` state object — it's the standard React pattern for forms.
+
+### File Mapping
+
+- Created: `frontend/src/types/application.ts` — `ApplicationResponse`, `CreateApplicationRequest` interfaces (mirrors API DTOs)
+- Created: `frontend/src/components/ApplicationForm.tsx`
+- Created: `frontend/src/components/ApplicationList.tsx`
+- Modified: `frontend/src/App.tsx` — added applications state, `fetchApplications`, wired both new components in
+
+---
+
+## Bugs Encountered & Fixed — Step 19 Follow-up
+
+### Bug 1: Orphaned dev server processes
+
+**Symptom:** login form stopped rendering; browser tab was showing stale/blank content.
+
+**Root cause:** earlier `npm run dev` sessions were never cleanly stopped (`Ctrl+C`) before starting new ones. Each new server, finding its default port taken, silently fell forward to the next free port (5173 → 5174 → 5175...). The browser tab in use was pointed at an old port serving a stale, orphaned process — not the current code.
+
+**Fix:** identified the orphaned processes via `netstat -ano | findstr :5173`, killed them by PID, started one clean instance.
+
+**Lesson — file under Gotchas, not architecture:** always fully stop a dev server (`Ctrl+C` in its terminal) before starting a new one, rather than opening a new terminal on top of an old one. Orphaned processes accumulate silently and are a common, confusing source of "my changes aren't showing up" bugs that have nothing to do with the code itself.
+
+### Bug 2: Type-only import treated as a runtime import
+
+**Symptom:** `Uncaught SyntaxError: The requested module '/src/types/application.ts' does not provide an export named 'CreateApplicationRequest'`
+
+**Root cause:** `CreateApplicationRequest` and `ApplicationResponse` are TypeScript `interface`s — a compile-time-only construct with no representation in the actual JavaScript that runs in the browser. They were imported with plain `import { X } from '...'` syntax. Vite's dev-server transform (esbuild, operating file-by-file without full cross-file type checking) didn't reliably elide these as type-only, and tried to resolve them as real runtime exports — which don't exist, since interfaces vanish entirely once TypeScript compiles.
+
+**Fix:** changed to explicit `import type { X } from '...'` syntax in all three files using these interfaces (`ApplicationForm.tsx`, `ApplicationList.tsx`, `App.tsx`). This syntax unambiguously tells the bundler "this import exists only for type-checking, strip it entirely before runtime" — removing any dependency on the bundler correctly inferring that on its own.
+
+### Plain-Language Definitions
+
+- **Type vs. value:** a *type* (like an `interface`) exists only while TypeScript is checking your code for correctness — it's completely erased before the code runs, leaving no trace in the actual JavaScript. A *value* (like a function, a class instance, a string) exists at runtime — it's real data the running program can use. Interfaces are always types, never values.
+- **`import type`:** an explicit TypeScript/ES module syntax stating "this import is a type-only import — remove it entirely during compilation, never try to load it as an actual module export at runtime." Best practice for any interface/type import in a Vite (or other esbuild/SWC-based) project, since it removes ambiguity the bundler would otherwise have to infer.
+- **esbuild (what Vite uses under the hood in dev mode):** an extremely fast JavaScript/TypeScript bundler that transforms *one file at a time*, without building a full cross-file type-checking model (that's TypeScript's own compiler's job, run separately). This speed is why Vite's dev server feels instant — but it's also why explicit signals like `import type` matter more here than they might in a slower, more holistic bundler.
+
+### File Mapping
+
+- Modified: `frontend/src/components/ApplicationForm.tsx` (import syntax)
+- Modified: `frontend/src/components/ApplicationList.tsx` (import syntax)
+- Modified: `frontend/src/App.tsx` (import syntax)
+- No file changes for Bug 1 — process/environment issue only, not a code defect

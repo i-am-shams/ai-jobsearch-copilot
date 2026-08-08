@@ -1,6 +1,6 @@
 import { useState, FormEvent } from 'react';
 import { apiClient } from '../api/client';
-import { CreateApplicationRequest } from '../types/application';
+import type { CreateApplicationRequest } from '../types/application';
 
 interface Props {
   onCreated: () => void; // tells parent to refresh the list

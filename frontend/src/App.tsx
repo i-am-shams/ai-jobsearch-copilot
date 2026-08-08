@@ -4,7 +4,7 @@ import { LoginForm } from './components/LoginForm';
 import { ApplicationForm } from './components/ApplicationForm';
 import { ApplicationList } from './components/ApplicationList';
 import { apiClient } from './api/client';
-import { ApplicationResponse } from './types/application';
+import type { ApplicationResponse } from './types/application';
 
 function App() {
   const { token, email, logout } = useAuth();

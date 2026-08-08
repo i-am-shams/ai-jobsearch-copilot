@@ -2,7 +2,7 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Step 16 complete + full verification pass done, about to start Step 17
+**Last updated:** Step 19 complete (+ 2 follow-up bugs fixed), about to start Step 20
 **Reference doc:** `Full_Stack_Developer_Transition_Roadmap.md` (roadmap), `ARCHITECTURE_CONCEPTS.md` (per-step architectural reasoning + concept definitions — read this for *why*, this file for *what/status*)
 
 ---
@@ -56,8 +56,12 @@ ai-jobsearch-copilot/
 ├── frontend/src/
 │   ├── api/client.ts             → shared axios instance, setAuthToken()
 │   ├── context/AuthContext.tsx   → in-memory token/email state, login()/logout()
-│   ├── components/LoginForm.tsx  → login+register toggle form
-│   ├── App.tsx                   → conditional render: LoginForm vs. authenticated view
+│   ├── types/application.ts      → ApplicationResponse, CreateApplicationRequest (mirrors API DTOs)
+│   ├── components/
+│   │   ├── LoginForm.tsx         → login+register toggle form
+│   │   ├── ApplicationForm.tsx   → submit new resume+JD pairing
+│   │   └── ApplicationList.tsx   → table of tracked applications
+│   ├── App.tsx                   → owns applications state, coordinates form+list, auth-gated render
 │   └── main.tsx                  → wraps <App/> in <AuthProvider>
 ├── docs/
 │   ├── HANDOVER.md               → this file
@@ -66,7 +70,7 @@ ai-jobsearch-copilot/
     └── docker-compose.dev.yml    → Postgres only, so far
 ```
 
-## Completed Steps (1–16 + verification pass)
+## Completed Steps (1–19 + 2 follow-up bugs)
 
 1. ✅ Environment setup (.NET 8, Node 20, Docker, Git)
 2. ✅ Monorepo structure (`api/ worker/ frontend/ infra/`)
@@ -86,10 +90,13 @@ ai-jobsearch-copilot/
 16. ✅ `App.tsx` wired to `AuthContext` — conditional render based on auth state. Built via Copilot directly in the repo (not chat-pasted) from this step onward.
 17. ✅ **Bug found & fixed:** register/login failing in browser with generic error — root cause was missing CORS configuration (API and frontend are different origins/ports) plus `UseHttpsRedirection()` breaking plain-http calls from the frontend. Fixed: added explicit CORS policy for `localhost:5173`/`5174`, removed `UseHttpsRedirection()` for local dev (noted as a dev-only choice — production will terminate TLS at the load balancer, covered in Week 4). Confirmed working after fix.
 18. ✅ **Full verification pass, Steps 1–16:** read every file directly rather than trusting prior chat summaries (Copilot had been writing code independently since Step 14). Found `ApplicationsController` had drifted — a defensive `GetCurrentUserId()` fallback (manually re-parsing the JWT from the raw header) had been added on top of an `OnTokenValidated` event handler in `Program.cs`, both patching the same root cause redundantly: ASP.NET Core's default JWT claim-name remapping silently broke the original clean `sub` claim lookup. **Fixed properly** with `options.MapInboundClaims = false` (one line, addresses root cause), reverted the controller back to its clean spec form, removed the redundant event handler. Also deleted leftover `WeatherForecastController.cs`/`WeatherForecast.cs` scaffold junk. Rebuild: 0 warnings, 0 errors. Confirmed login/register still working after the fix.
+19. ✅ **Create Application form + list view built** — `types/application.ts`, `ApplicationForm.tsx`, `ApplicationList.tsx`, `App.tsx` updated to own applications state and coordinate both. Verified all four files matched spec exactly (no drift this time). Two follow-up bugs found and fixed post-build:
+    - **Orphaned dev server processes** on ports 5173/5174 (never cleanly stopped across sessions) were serving stale code. Killed via `netstat`-identified PIDs, restarted clean on 5173.
+    - **Type-only import bug**: `CreateApplicationRequest`/`ApplicationResponse` (interfaces, not runtime values) were imported with plain `import { }` syntax, causing `Uncaught SyntaxError` in the browser — esbuild's per-file transform didn't elide them. Fixed with explicit `import type { }` syntax in all three affected files. Confirmed working after both fixes.
 
-## Next Step (19, formerly "17" before the CORS fix and verification pass were inserted)
+## Next Step (20)
 
-Create Application form + list view in the frontend — the first real feature UI, letting a logged-in user submit a resume+JD pairing and see their submitted applications (currently placeholder text in `App.tsx`).
+Week 2 begins: make the match-scoring flow actually asynchronous. Add the message queue (RabbitMQ locally), stand up the worker service (`worker/`, currently empty), and wire SignalR so completed match results push to the frontend live instead of staying `Pending` forever. Currently, submitting an application creates a `Pending` `MatchResult` row that nothing ever processes — this is the next real feature milestone, not just plumbing.
 
 ## Known Gotchas / Things That Tripped Us Up (don't repeat)
 
@@ -99,6 +106,8 @@ Create Application form + list view in the frontend — the first real feature U
 - **CORS + `UseHttpsRedirection()`**: any local dev setup with frontend and API on different ports needs explicit CORS configuration — the browser blocks cross-origin requests by default. `UseHttpsRedirection()` will also break plain-http frontend calls if left in for local dev.
 - **JWT claim remapping**: ASP.NET Core's JWT Bearer middleware silently renames claim types like `sub` by default. Set `options.MapInboundClaims = false` explicitly if you need to read standard JWT claim names as-issued — don't work around it with manual token re-parsing.
 - **AI-assisted dev failure mode observed directly**: when Copilot hits an error, it tends to patch the symptom locally (add a fallback, catch and retry) rather than diagnose the root cause. Worth deliberately reviewing AI-written code for this pattern, not just checking that it compiles/runs.
+- **Always `Ctrl+C` a dev server before starting a new one.** Orphaned processes silently squat on ports (5173 → 5174 → 5175...), and an old browser tab pointed at a stale port serves outdated code that looks like a mysterious regression.
+- **Always use `import type { }` for TypeScript interfaces/types**, never plain `import { }`. Vite's dev-mode transform (esbuild) processes files individually and doesn't always reliably elide type-only imports, causing a runtime `SyntaxError` for something that's actually just a compile-time construct.
 
 ## User Context (for tone/pacing calibration)
 

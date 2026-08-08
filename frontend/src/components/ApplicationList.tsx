@@ -1,4 +1,4 @@
-import { ApplicationResponse } from '../types/application';
+import type { ApplicationResponse } from '../types/application';
 
 interface Props {
   applications: ApplicationResponse[];
