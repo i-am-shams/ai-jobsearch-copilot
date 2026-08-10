@@ -10,5 +10,14 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"    # AMQP protocol port — app connects here
+      - "15672:15672"  # management UI — browse to http://localhost:15672
+    environment:
+      RABBITMQ_DEFAULT_USER: jobcopilot
+      RABBITMQ_DEFAULT_PASS: devpassword
+
 volumes:
   pgdata:

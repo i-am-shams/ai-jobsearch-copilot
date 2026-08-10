@@ -2,7 +2,7 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Step 19 complete (+ 2 follow-up bugs fixed), about to start Step 20
+**Last updated:** Step 20 complete, about to start Step 21
 **Reference doc:** `Full_Stack_Developer_Transition_Roadmap.md` (roadmap), `ARCHITECTURE_CONCEPTS.md` (per-step architectural reasoning + concept definitions — read this for *why*, this file for *what/status*)
 
 ---
@@ -49,6 +49,7 @@ ai-jobsearch-copilot/
 │   ├── Models/           → User.cs, Application.cs, MatchResult.cs
 │   ├── Data/             → AppDbContext.cs
 │   ├── Services/         → AuthService.cs
+│   ├── Messaging/        → MatchRequestedEvent.cs, IMessagePublisher.cs, RabbitMqPublisher.cs
 │   ├── Migrations/       → InitialCreate
 │   ├── Program.cs        → DbContext, JWT auth, CORS, all middleware registered
 │   └── appsettings.Development.json  → connection string + JWT config
@@ -67,10 +68,10 @@ ai-jobsearch-copilot/
 │   ├── HANDOVER.md               → this file
 │   └── ARCHITECTURE_CONCEPTS.md  → per-step architectural reasoning + concept glossary
 └── infra/
-    └── docker-compose.dev.yml    → Postgres only, so far
+    └── docker-compose.dev.yml    → Postgres + RabbitMQ
 ```
 
-## Completed Steps (1–19 + 2 follow-up bugs)
+## Completed Steps (1–20)
 
 1. ✅ Environment setup (.NET 8, Node 20, Docker, Git)
 2. ✅ Monorepo structure (`api/ worker/ frontend/ infra/`)
@@ -93,14 +94,15 @@ ai-jobsearch-copilot/
 19. ✅ **Create Application form + list view built** — `types/application.ts`, `ApplicationForm.tsx`, `ApplicationList.tsx`, `App.tsx` updated to own applications state and coordinate both. Verified all four files matched spec exactly (no drift this time). Two follow-up bugs found and fixed post-build:
     - **Orphaned dev server processes** on ports 5173/5174 (never cleanly stopped across sessions) were serving stale code. Killed via `netstat`-identified PIDs, restarted clean on 5173.
     - **Type-only import bug**: `CreateApplicationRequest`/`ApplicationResponse` (interfaces, not runtime values) were imported with plain `import { }` syntax, causing `Uncaught SyntaxError` in the browser — esbuild's per-file transform didn't elide them. Fixed with explicit `import type { }` syntax in all three affected files. Confirmed working after both fixes.
+20. ✅ **RabbitMQ integration — API publishes `MatchRequested` events.** Added RabbitMQ (`3-management` image) to `docker-compose.dev.yml`. Created `Messaging/` folder: `MatchRequestedEvent` (message contract), `IMessagePublisher` (interface, enables swapping to SQS/Azure Service Bus later without touching calling code), `RabbitMqPublisher` (implementation — durable queue, persistent messages, registered as `AddSingleton`). `ApplicationsController.Create` now publishes after `SaveChangesAsync()` succeeds. Verified: all files matched spec exactly, zero drift. Build clean. End-to-end confirmed via RabbitMQ management dashboard — submitted application, saw the message land in `match-requests` queue (`Ready: 1`, durable flag set), correctly waiting since no consumer exists yet.
 
-## Next Step (20)
+## Next Step (21)
 
-Week 2 begins: make the match-scoring flow actually asynchronous. Add the message queue (RabbitMQ locally), stand up the worker service (`worker/`, currently empty), and wire SignalR so completed match results push to the frontend live instead of staying `Pending` forever. Currently, submitting an application creates a `Pending` `MatchResult` row that nothing ever processes — this is the next real feature milestone, not just plumbing.
+Build the worker service (`worker/` — currently empty) that consumes from the `match-requests` queue. For each message, it should call an AI API (embeddings + LLM call) to score the resume/JD match, then update the corresponding `MatchResult` row (status → `Completed`, populate `MatchScore` and `GapAnalysis`). This is where the "AI-assisted development" and "AI-infra" parts of the project's value proposition actually get built — everything so far has been infrastructure to support this step.
 
 ## Known Gotchas / Things That Tripped Us Up (don't repeat)
 
-- NuGet defaults to latest major package version even on a .NET 8 project — always pin `--version 8.0.*` explicitly for EF Core/ASP.NET packages.
+- NuGet defaults to latest major package version even on a .NET 8 project — always pin explicitly (`8.0.*` for EF Core/ASP.NET packages; other packages need their own known-good version checked, e.g. `RabbitMQ.Client` pinned to `6.8.1` in Step 20 to avoid the newer major version's breaking API changes). This is a general rule, not specific to one package.
 - Docker Compose port mapping is `hostPort:containerPort` — container-side must stay `5432` for Postgres regardless of what host port you choose.
 - Run `docker compose` commands from the `infra/` folder, or pass the full path to the compose file.
 - **CORS + `UseHttpsRedirection()`**: any local dev setup with frontend and API on different ports needs explicit CORS configuration — the browser blocks cross-origin requests by default. `UseHttpsRedirection()` will also break plain-http frontend calls if left in for local dev.

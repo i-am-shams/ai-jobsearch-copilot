@@ -403,3 +403,39 @@ Both fixes address the same problem from different angles — meaning the contro
 - Modified: `frontend/src/components/ApplicationList.tsx` (import syntax)
 - Modified: `frontend/src/App.tsx` (import syntax)
 - No file changes for Bug 1 — process/environment issue only, not a code defect
+
+
+---
+
+## Step 20: RabbitMQ Setup + API Publishes to the Queue
+
+### Architectural Viewpoint & Arguments
+
+`RabbitMqPublisher` is registered as `AddSingleton`, unlike `AppDbContext` which is `AddScoped`.
+
+- **Why the difference matters:** a RabbitMQ connection is expensive to establish and is thread-safe to share — you want exactly one long-lived connection for the app's entire lifetime. A `DbContext`, by contrast, tracks per-request state and must not be shared across concurrent requests, hence `Scoped` (one instance per HTTP request). Choosing the right DI lifetime isn't a fixed rule per "type of thing" — it depends on whether the underlying resource is safe and efficient to share, and this is a clean example of two different correct answers for two different reasons.
+- `IMessagePublisher` is an interface implemented by `RabbitMqPublisher`, and the controller depends only on the interface.
+- **Why:** the controller (and anything else that needs to publish an event) has zero knowledge of RabbitMQ specifically — it just knows "I can publish a `MatchRequestedEvent`." This means swapping to SQS or Azure Service Bus in the Week 4 cloud phase means writing one new class and changing one line in `Program.cs`'s DI registration — nothing else in the codebase changes. This is the Dependency Inversion principle in direct, practical use, not just an abstract OOP concept.
+- The message queue itself is configured `durable: true`, and each published message is marked `Persistent = true`.
+- **Why both:** a durable queue survives a RabbitMQ broker restart, but only if the *messages in it* are also marked persistent — a non-persistent message in a durable queue is still lost on restart. Both settings are required together for genuine durability. This matters because a queued message represents a user's real, submitted work (their application, awaiting a match score) — silently losing it on a broker restart would be a real product bug, not just an inconvenience.
+- Publishing happens **after** `SaveChangesAsync()` succeeds in `ApplicationsController.Create`, never before.
+- **Why the ordering is deliberate, not incidental:** if the message were published first and the database save then failed, a worker would eventually try to process a `MatchRequestedEvent` referencing an `ApplicationId` that doesn't exist — a real, if intermittent, source of a hard-to-reproduce bug. Always publish only after the state being referenced is durably committed.
+
+### Plain-Language Definitions
+
+- **Message queue:** a service that temporarily holds messages sent by one part of a system (a "producer" — here, the API) until another part (a "consumer" — the worker, Step 21) is ready to process them. Decouples the two: the producer doesn't wait for or care when the consumer runs.
+- **AMQP (Advanced Message Queuing Protocol):** the network protocol RabbitMQ speaks — port 5672 in this setup. Not HTTP; a different protocol entirely, purpose-built for message queuing.
+- **Exchange, routing key, queue (RabbitMQ's core model):** a producer never sends a message directly to a queue — it sends to an "exchange," which uses a "routing key" to decide which queue(s) receive it. Using the *default* exchange (`exchange: ""`) with a routing key matching the queue's name is RabbitMQ's simplest routing pattern — a direct producer-to-queue handoff. More complex systems use named exchanges to fan a single message out to multiple queues/consumers; not needed at this project's current scale.
+- **Durable (queue) vs. Persistent (message):** two related but distinct settings that must both be set for a message to survive a broker restart — durability is a property of the queue itself (does the queue's *existence* survive a restart), persistence is a property of each individual message (does *this message's data* survive a restart).
+- **Dependency Inversion:** high-level code (the controller) depends on an abstraction (`IMessagePublisher`) rather than a concrete implementation (`RabbitMqPublisher`) — meaning the concrete implementation can be swapped without changing the code that depends on it. One of the "SOLID" object-oriented design principles, and one of the most practically useful ones in real systems.
+
+### File Mapping
+
+- Created: `api/JobCopilot.Api/Messaging/MatchRequestedEvent.cs`, `IMessagePublisher.cs`, `RabbitMqPublisher.cs`
+- Modified: `api/JobCopilot.Api/JobCopilot.Api.csproj` (added `RabbitMQ.Client`, pinned to `6.8.1`)
+- Modified: `api/JobCopilot.Api/appsettings.Development.json` (added `RabbitMq:*` config)
+- Modified: `api/JobCopilot.Api/Program.cs` (registered `IMessagePublisher` → `RabbitMqPublisher` as singleton)
+- Modified: `api/JobCopilot.Api/Controllers/ApplicationsController.cs` (injected `IMessagePublisher`, publish call added after `SaveChangesAsync()`)
+- Modified: `infra/docker-compose.dev.yml` (added `rabbitmq` service, `3-management` image variant for the dashboard)
+
+**Verified:** all files matched spec exactly, zero drift. Build: 0 warnings, 0 errors. Both Docker containers (Postgres, RabbitMQ) confirmed running. End-to-end test: submitted an application via the frontend, confirmed via the RabbitMQ management dashboard (`localhost:15672`) that the `match-requests` queue shows the message as `Ready: 1`, durable (`D` flag), correctly waiting for a consumer that doesn't exist yet — exactly the expected state before Step 21.

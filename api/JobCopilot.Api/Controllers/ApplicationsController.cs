@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using JobCopilot.Api.Data;
+using JobCopilot.Api.Messaging;
 using JobCopilot.Api.Models;
 
 namespace JobCopilot.Api.Controllers;
@@ -14,8 +15,13 @@ namespace JobCopilot.Api.Controllers;
 public class ApplicationsController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly IMessagePublisher _publisher;
 
-    public ApplicationsController(AppDbContext db) => _db = db;
+    public ApplicationsController(AppDbContext db, IMessagePublisher publisher)
+    {
+        _db = db;
+        _publisher = publisher;
+    }
 
     public record CreateApplicationRequest(
         string JobTitle,
@@ -56,6 +62,8 @@ public class ApplicationsController : ControllerBase
         _db.Applications.Add(application);
         _db.MatchResults.Add(matchResult);
         await _db.SaveChangesAsync();
+
+        _publisher.PublishMatchRequested(new MatchRequestedEvent(application.Id));
 
         return Ok(new ApplicationResponse(
             application.Id, application.JobTitle, application.CompanyName,
