@@ -1,53 +1,107 @@
 using System.Text;
 using System.Text.Json;
 using RabbitMQ.Client;
+using JobCopilot.Contracts;
 
 namespace JobCopilot.Api.Messaging;
 
+/// <summary>
+/// Ultra-defensive RabbitMQ publisher.
+/// Never throws any exceptions.
+/// Connects lazily on first publish attempt.
+/// </summary>
 public class RabbitMqPublisher : IMessagePublisher, IDisposable
 {
     private const string QueueName = "match-requests";
-    private readonly IConnection _connection;
-    private readonly IModel _channel;
+    private readonly IConfiguration _config;
+    private IConnection? _connection;
+    private IModel? _channel;
+    private readonly object _lock = new object();
 
     public RabbitMqPublisher(IConfiguration config)
     {
-        var factory = new ConnectionFactory
+        try
         {
-            HostName = config["RabbitMq:Host"] ?? "localhost",
-            Port = int.Parse(config["RabbitMq:Port"] ?? "5672"),
-            UserName = config["RabbitMq:Username"] ?? "jobcopilot",
-            Password = config["RabbitMq:Password"] ?? "devpassword"
-        };
+            _config = config;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RabbitMqPublisher] Constructor error: {ex.Message}");
+        }
+    }
 
-        _connection = factory.CreateConnection();
-        _channel = _connection.CreateModel();
+    private void EnsureConnection()
+    {
+        lock (_lock)
+        {
+            if (_connection != null && _connection.IsOpen && _channel != null && _channel.IsOpen)
+                return;
 
-        _channel.QueueDeclare(
-            queue: QueueName,
-            durable: true,
-            exclusive: false,
-            autoDelete: false);
+            try
+            {
+                var host = _config?["RabbitMq:Host"] ?? "localhost";
+                var port = int.TryParse(_config?["RabbitMq:Port"], out var p) ? p : 5672;
+                var username = _config?["RabbitMq:Username"] ?? "jobcopilot";
+                var password = _config?["RabbitMq:Password"] ?? "devpassword";
+
+                var factory = new ConnectionFactory
+                {
+                    HostName = host,
+                    Port = port,
+                    UserName = username,
+                    Password = password
+                };
+
+                _connection = factory.CreateConnection();
+                _channel = _connection.CreateModel();
+
+                _channel.QueueDeclare(QueueName, durable: true, exclusive: false, autoDelete: false);
+                Console.WriteLine($"[RabbitMqPublisher] Connected and declared queue '{QueueName}'");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[RabbitMqPublisher] Connection error: {ex.Message}");
+                _connection = null;
+                _channel = null;
+            }
+        }
     }
 
     public void PublishMatchRequested(MatchRequestedEvent evt)
     {
-        var json = JsonSerializer.Serialize(evt);
-        var body = Encoding.UTF8.GetBytes(json);
-
-        var props = _channel.CreateBasicProperties();
-        props.Persistent = true;
-
-        _channel.BasicPublish(
-            exchange: "",
-            routingKey: QueueName,
-            basicProperties: props,
-            body: body);
+        try
+        {
+            lock (_lock)
+            {
+                EnsureConnection();
+                if (_channel?.IsOpen == true)
+                {
+                    var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(evt));
+                    var props = _channel.CreateBasicProperties();
+                    props.Persistent = true;
+                    _channel.BasicPublish("", QueueName, props, body);
+                    Console.WriteLine($"[RabbitMqPublisher] Published ApplicationId: {evt.ApplicationId}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RabbitMqPublisher] Publish error: {ex.Message}");
+        }
     }
 
     public void Dispose()
     {
-        _channel?.Dispose();
-        _connection?.Dispose();
+        try
+        {
+            lock (_lock)
+            {
+                _channel?.Dispose();
+                _connection?.Dispose();
+            }
+        }
+        catch { }
     }
 }
+
+

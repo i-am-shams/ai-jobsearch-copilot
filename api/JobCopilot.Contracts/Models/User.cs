@@ -1,4 +1,4 @@
-namespace JobCopilot.Api.Models;
+namespace JobCopilot.Contracts;
 
 public class User
 {

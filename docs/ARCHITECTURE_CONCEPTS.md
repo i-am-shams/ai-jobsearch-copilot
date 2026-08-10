@@ -439,3 +439,55 @@ Both fixes address the same problem from different angles — meaning the contro
 - Modified: `infra/docker-compose.dev.yml` (added `rabbitmq` service, `3-management` image variant for the dashboard)
 
 **Verified:** all files matched spec exactly, zero drift. Build: 0 warnings, 0 errors. Both Docker containers (Postgres, RabbitMQ) confirmed running. End-to-end test: submitted an application via the frontend, confirmed via the RabbitMQ management dashboard (`localhost:15672`) that the `match-requests` queue shows the message as `Ready: 1`, durable (`D` flag), correctly waiting for a consumer that doesn't exist yet — exactly the expected state before Step 21.
+
+
+---
+
+## Step 21: Worker Service (C#) + Gemini Matching
+
+### Architectural Viewpoint & Arguments
+
+A new `JobCopilot.Contracts` class library was extracted, holding `AppDbContext`, the EF models (`User`, `Application`, `MatchResult`), and message event types (`MatchRequestedEvent`, `MatchCompletedEvent`). Both API and worker reference it.
+
+- **Why:** the worker needs the same database schema and the same event shape as the API — without a shared library, these would have to be hand-copied into the worker project and kept in sync manually forever. A shared contracts library is the standard pattern for this in real microservice systems: one definition, referenced by every service that needs it, so drift becomes structurally impossible rather than something you have to remember to prevent.
+- **A real mistake happened here, worth recording as a lesson:** the initial implementation *copied* the models into `Contracts` rather than *moving* them — leaving an orphaned, fully duplicate `Models/` folder still sitting in the API project, in a different namespace (`JobCopilot.Api.Models` vs `JobCopilot.Contracts`). This compiled without error, because C# permits identical class names in different namespaces — so nothing failed loudly. It was found only by deliberately reading the actual file tree rather than trusting that "it builds" meant "it's correct." Deleted; rebuild confirmed the orphaned copy was truly unused dead code, not silently relied upon anywhere.
+
+The worker is a .NET `BackgroundService` — a long-running hosted process, not a request/response API.
+
+- **Why this shape fits:** unlike the API (which reacts to individual HTTP requests), the worker's whole job is to sit and continuously consume from a queue for as long as the process lives. `BackgroundService` is the standard .NET base class for exactly this — a single `ExecuteAsync` method that runs for the process's entire lifetime.
+- **A real bug in the original spec, caught and fixed during implementation:** the initial `ExecuteAsync` ended with `return Task.CompletedTask;` after setting up the RabbitMQ consumer. This is wrong — `ExecuteAsync` completing signals the *host* that the background service is done and can shut down, so the worker would have set up its listener and then immediately exited, never actually staying alive to process anything. Fixed with `await Task.Delay(Timeout.Infinite, stoppingToken);`, which blocks for the process's entire lifetime (until cancellation) while the event-driven `consumer.Received` callback handles incoming messages in the background. Worth understanding *why* this line is needed, not just copying it — it's a common gotcha with `BackgroundService` generally, not specific to this project.
+
+RabbitMQ consumption uses `autoAck: false` with a manual `BasicAck` only after successful processing, plus `BasicQos(0, 1, false)` limiting the worker to one in-flight message at a time.
+
+- **Why manual ack:** if the worker crashes mid-processing (e.g., the process dies while calling the AI API), an auto-acked message would already be considered "handled" and be lost forever, even though the actual work never completed. Manual ack means RabbitMQ only removes a message once we've explicitly confirmed it was fully processed — a crash mid-flight causes the message to be redelivered instead of silently dropped.
+- **Why QoS of 1:** without it, RabbitMQ would push many messages to the worker at once, and a single crash could lose or misorder a whole batch of in-flight work. Processing one at a time is the simplest correct starting point; parallelism could be added deliberately later, but only once the simple, correct version works.
+
+`GeminiMatchingService` wraps the Gemini API call behind a plain `HttpClient`, registered via `AddHttpClient<GeminiMatchingService>()`.
+
+- **Why `AddHttpClient<T>` specifically, not `new HttpClient()` directly:** raw `HttpClient` instances, if created and disposed repeatedly, can exhaust the machine's available network sockets under load (a well-known .NET pitfall). `AddHttpClient` registers a properly pooled, reused client through DI instead — the "right" way to consume any HTTP API from .NET, not just Gemini specifically.
+- **A real bug found here too:** the model string was `gemini-1.5-flash`, which is fully shut down as of this project's build — Google confirms all Gemini 1.0 and 1.5 models return a 404 on every request. This wasn't a subtle bug; it would have failed every single match, always. Verified current model availability via live search rather than assuming prior knowledge was current (AI model availability changes fast enough that "I already knew this" is not a safe assumption) — corrected to `gemini-3.5-flash`, a current stable, generally-available model with no announced shutdown date.
+- **API key handled via `dotnet user-secrets`**, not `appsettings.json` — confirmed the key never appears in any tracked config file.
+
+**A verification report (`STEP_21_VERIFICATION.md`) was generated claiming "VERIFICATION COMPLETE" and "Production Readiness ✅", while its own "How to Verify End-to-End" section was written as a future to-do list, not something actually performed.** This is a meaningful pattern to name explicitly: a build succeeding and a service starting without crashing are necessary but not sufficient proof that a feature actually works. The only real proof is exercising the actual behavior — submitting a real application and confirming a real score comes back — which was done separately, live, after this report was reviewed skeptically rather than accepted at face value.
+
+**Live, actual end-to-end verification performed** (not just claimed): registered a user, submitted an application via the real API (React frontend's exact request shape, reproduced via `Invoke-RestMethod`), and polled the application afterward — confirmed `matchStatus: Completed` and a real, plausible `matchScore` (35, sensibly low given the test resume genuinely lacked several skills the test job description asked for — a good sign Gemini was reasoning about actual content, not returning a fixed placeholder).
+
+### Plain-Language Definitions
+
+- **Class library (shared contracts project):** a .NET project type that produces no runnable application by itself — just a `.dll` of reusable types other projects can reference. The standard way to share code (models, event types, interfaces) between multiple independent services without copy-pasting.
+- **`BackgroundService`:** a base class in .NET for long-running processes that aren't triggered by individual requests — the framework calls `ExecuteAsync` once, and it's expected to keep running (typically via an infinite loop or a blocking wait) until the application shuts down.
+- **Manual acknowledgment (ack) vs. auto-ack (message queues):** auto-ack tells the queue "consider this message handled the instant it's delivered," regardless of whether processing actually succeeds. Manual ack means the consumer explicitly confirms success afterward — the safer default for any message representing real work that must not be silently lost.
+- **QoS (Quality of Service) prefetch limit:** a setting controlling how many unacknowledged messages a consumer can hold at once. A QoS of 1 means "give me one message, don't send another until I've dealt with this one" — the simplest, safest starting point for a new consumer.
+- **`HttpClientFactory` (`AddHttpClient<T>`):** .NET's recommended pattern for consuming HTTP APIs — manages a pool of reusable `HttpClient` instances internally, avoiding a specific, well-documented resource-exhaustion problem that comes from manually creating and disposing raw `HttpClient` objects per-call.
+- **Dead code vs. a working system:** code that compiles and even runs without error is not proof it's *correct* — a duplicate, unused class sitting alongside the real one, or a service that starts and immediately exits, can both look "fine" from the outside (no red error text) while being genuinely broken or redundant. This is why reading the actual code and testing actual behavior matters more than checking for the absence of errors.
+
+### File Mapping
+
+- Created: `api/JobCopilot.Contracts/` (new class library) — `Data/AppDbContext.cs`, `Models/User.cs`, `Application.cs`, `MatchResult.cs`, `Messaging/MatchRequestedEvent.cs`, `MatchCompletedEvent.cs`
+- Deleted: `api/JobCopilot.Api/Models/` (orphaned duplicate, found during verification), `api/JobCopilot.Api/Data/` (now-empty folder after `AppDbContext.cs` moved), `api/JobCopilot.Api/Messaging/MatchRequestedEvent.cs` (moved to Contracts), `api/JobCopilot.Contracts/Class1.cs` (scaffold leftover)
+- Modified: `api/JobCopilot.Api/Controllers/ApplicationsController.cs`, `AuthController.cs`, `Services/AuthService.cs`, `Program.cs`, `Messaging/IMessagePublisher.cs`, `RabbitMqPublisher.cs` (all updated to reference `JobCopilot.Contracts` types instead of local ones)
+- Modified: `api/JobCopilot.Api/Migrations/*` (namespace-only change, `JobCopilot.Api.Data` → `JobCopilot.Contracts`, no actual schema change)
+- Created: `worker/JobCopilot.Worker/` (new project) — `Worker.cs`, `Services/GeminiMatchingService.cs`, `Program.cs`, `appsettings.Development.json`
+- Created: `scripts/start-services.ps1` — convenience launcher for API + worker; **rewritten** after an initial bug (`-NoNewWindow` requires an attached console and silently fails when launched headlessly, leaving `$apiProcess` null and crashing on `.WaitForExit()`) — fixed by redirecting output to log files instead and not blocking on exit
+- Modified: `.gitignore` — added `*.log`, `logs/`
+- Moved: `STEP_21_VERIFICATION.md` → `docs/STEP_21_VERIFICATION.md` (kept as a historical record of the self-generated report, useful precisely *because* it's an example of the "claims completion without proof" pattern worth recognizing in future AI-assisted work)

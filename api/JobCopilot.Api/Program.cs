@@ -1,7 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
-using JobCopilot.Api.Data;
 using JobCopilot.Api.Messaging;
 using JobCopilot.Api.Services;
+using JobCopilot.Contracts;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -16,6 +16,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
 
 builder.Services.AddScoped<AuthService>();
+
 builder.Services.AddSingleton<IMessagePublisher, RabbitMqPublisher>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

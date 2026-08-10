@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
-using JobCopilot.Api.Models;
 
-namespace JobCopilot.Api.Data;
+namespace JobCopilot.Contracts;
 
 public class AppDbContext : DbContext
 {

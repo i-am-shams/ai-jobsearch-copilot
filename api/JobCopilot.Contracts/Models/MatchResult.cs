@@ -1,4 +1,4 @@
-namespace JobCopilot.Api.Models;
+namespace JobCopilot.Contracts;
 
 public enum MatchStatus { Pending, Processing, Completed, Failed }
 

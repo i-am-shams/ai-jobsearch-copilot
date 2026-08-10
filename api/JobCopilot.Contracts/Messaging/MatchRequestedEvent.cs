@@ -1,3 +1,3 @@
-namespace JobCopilot.Api.Messaging;
+namespace JobCopilot.Contracts;
 
 public record MatchRequestedEvent(Guid ApplicationId);

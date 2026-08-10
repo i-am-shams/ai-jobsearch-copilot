@@ -2,7 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
-using JobCopilot.Api.Models;
+using JobCopilot.Contracts;
 
 namespace JobCopilot.Api.Services;
 

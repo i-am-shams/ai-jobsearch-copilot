@@ -3,9 +3,8 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using JobCopilot.Api.Data;
+using JobCopilot.Contracts;
 using JobCopilot.Api.Messaging;
-using JobCopilot.Api.Models;
 
 namespace JobCopilot.Api.Controllers;
 
@@ -63,6 +62,7 @@ public class ApplicationsController : ControllerBase
         _db.MatchResults.Add(matchResult);
         await _db.SaveChangesAsync();
 
+        // Publish message to RabbitMQ queue for worker processing
         _publisher.PublishMatchRequested(new MatchRequestedEvent(application.Id));
 
         return Ok(new ApplicationResponse(

@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using JobCopilot.Api.Data;
-using JobCopilot.Api.Models;
+using JobCopilot.Contracts;
 using JobCopilot.Api.Services;
 
 namespace JobCopilot.Api.Controllers;
