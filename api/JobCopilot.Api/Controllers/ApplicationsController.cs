@@ -34,7 +34,8 @@ public class ApplicationsController : ControllerBase
         string CompanyName,
         DateTime CreatedAt,
         string MatchStatus,
-        int? MatchScore);
+        int? MatchScore,
+        string? GapAnalysis);
 
     private Guid CurrentUserId =>
         Guid.Parse(User.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
@@ -67,7 +68,7 @@ public class ApplicationsController : ControllerBase
 
         return Ok(new ApplicationResponse(
             application.Id, application.JobTitle, application.CompanyName,
-            application.CreatedAt, matchResult.Status.ToString(), matchResult.MatchScore));
+            application.CreatedAt, matchResult.Status.ToString(), matchResult.MatchScore, matchResult.GapAnalysis));
     }
 
     [HttpGet]
@@ -79,7 +80,7 @@ public class ApplicationsController : ControllerBase
             .OrderByDescending(a => a.CreatedAt)
             .Select(a => new ApplicationResponse(
                 a.Id, a.JobTitle, a.CompanyName, a.CreatedAt,
-                a.MatchResult!.Status.ToString(), a.MatchResult.MatchScore))
+                a.MatchResult!.Status.ToString(), a.MatchResult.MatchScore, a.MatchResult.GapAnalysis))
             .ToListAsync();
 
         return Ok(apps);
@@ -96,6 +97,6 @@ public class ApplicationsController : ControllerBase
 
         return Ok(new ApplicationResponse(
             app.Id, app.JobTitle, app.CompanyName, app.CreatedAt,
-            app.MatchResult!.Status.ToString(), app.MatchResult.MatchScore));
+            app.MatchResult!.Status.ToString(), app.MatchResult.MatchScore, app.MatchResult.GapAnalysis));
     }
 }

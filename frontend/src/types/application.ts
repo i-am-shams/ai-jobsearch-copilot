@@ -5,6 +5,7 @@ export interface ApplicationResponse {
   createdAt: string;
   matchStatus: 'Pending' | 'Processing' | 'Completed' | 'Failed';
   matchScore: number | null;
+  gapAnalysis: string | null;
 }
 
 export interface CreateApplicationRequest {

@@ -1,4 +1,5 @@
 using System.IdentityModel.Tokens.Jwt;
+using JobCopilot.Api.Hubs;
 using JobCopilot.Api.Messaging;
 using JobCopilot.Api.Services;
 using JobCopilot.Contracts;
@@ -18,6 +19,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddScoped<AuthService>();
 
 builder.Services.AddSingleton<IMessagePublisher, RabbitMqPublisher>();
+
+builder.Services.AddSignalR();
+builder.Services.AddHostedService<MatchCompletedConsumer>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -47,7 +51,8 @@ builder.Services.AddCors(options =>
     {
         policy.WithOrigins("http://localhost:5173", "http://localhost:5174")
               .AllowAnyHeader()
-              .AllowAnyMethod();
+              .AllowAnyMethod()
+              .AllowCredentials();
     });
 });
 
@@ -71,5 +76,6 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<MatchHub>("/hubs/match");
 
 app.Run();

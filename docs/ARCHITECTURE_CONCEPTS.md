@@ -491,3 +491,52 @@ RabbitMQ consumption uses `autoAck: false` with a manual `BasicAck` only after s
 - Created: `scripts/start-services.ps1` — convenience launcher for API + worker; **rewritten** after an initial bug (`-NoNewWindow` requires an attached console and silently fails when launched headlessly, leaving `$apiProcess` null and crashing on `.WaitForExit()`) — fixed by redirecting output to log files instead and not blocking on exit
 - Modified: `.gitignore` — added `*.log`, `logs/`
 - Moved: `STEP_21_VERIFICATION.md` → `docs/STEP_21_VERIFICATION.md` (kept as a historical record of the self-generated report, useful precisely *because* it's an example of the "claims completion without proof" pattern worth recognizing in future AI-assisted work)
+
+
+---
+
+## Step 22: SignalR Real-Time Updates
+
+### Architectural Viewpoint & Arguments
+
+Real-time delivery is a **second, independent queue** (`match-completed`) rather than the worker calling SignalR directly.
+
+- **Why:** the worker has no reason to know anything about SignalR, HTTP, or the API's connected clients — its only job is consuming match requests and producing results. Keeping it decoupled means the worker and the API's real-time layer can fail, restart, or scale independently. This is the same reasoning that justified the original queue in Step 20, applied a second time to a new boundary.
+- `MatchCompletedEvent` carries `UserId` directly, rather than the API's consumer looking it up from the database.
+- **Why:** the worker already has `app.UserId` in scope at the moment it publishes — passing it along is free. Making the consumer query the database just to route a notification would be a wasted round-trip for information the producer already had. A small but real example of designing message payloads around what the consumer actually needs, not just the minimum "technically correct" data.
+
+SignalR groups connections by `userId` (`Groups.AddToGroupAsync(Context.ConnectionId, userId)` in `MatchHub.OnConnectedAsync`), and the consumer notifies `Clients.Group(evt.UserId.ToString())`, never a broadcast.
+
+- **Why:** without per-user grouping, every connected browser tab would receive every user's match results — a real data leak, not just noise. Grouping by the same `userId` claim already used throughout the JWT-based auth model keeps this consistent with how authorization works everywhere else in the app, rather than inventing a separate mechanism.
+
+Publishing to `match-completed` happens only on the success path in the worker, never on `Failed`.
+
+- **Why (a deliberate, named limitation, not an oversight):** a failed match doesn't currently push a live update — the frontend will only learn about a failure on its next manual fetch. Acceptable for now since failures should be rare (network hiccup calling Gemini, etc.), but worth fixing properly later rather than forgetting it was a shortcut.
+
+CORS was updated to add `.AllowCredentials()`.
+
+- **Why SignalR specifically needs this:** SignalR's default transport (WebSockets, with fallbacks) needs to send credentials (the JWT, via `accessTokenFactory`) as part of establishing the connection — plain REST calls didn't need this because the JWT was just an `Authorization` header, but SignalR's connection negotiation works differently and needs the browser's cross-origin credential policy to explicitly allow it.
+
+### Plain-Language Definitions
+
+- **SignalR:** ASP.NET Core's real-time communication library — lets the server push data to connected browser clients instantly, instead of the client having to repeatedly ask "anything new?" (polling). Uses WebSockets where available, falling back to older techniques automatically if not.
+- **Hub:** SignalR's server-side entry point — a class clients connect to, analogous to a controller but for persistent, bidirectional connections instead of one-off HTTP requests.
+- **Group (SignalR):** a way to send a message to a specific subset of connected clients rather than all of them or exactly one — here, "all connections belonging to this one user" (relevant if someone has the app open in two tabs, both should get the update).
+- **Negotiate / connection handshake:** before a SignalR connection upgrades to a WebSocket, the client and server perform an initial HTTP-based negotiation to agree on transport and exchange the auth token. This is why CORS credential settings matter even though the ongoing connection isn't a typical REST call.
+- **Eventual consistency in local testing:** a message being acknowledged on a queue doesn't mean the associated work is *instantly* visible everywhere it needs to be — the AI API call itself takes real wall-clock time. Polling too soon after an action can show a stale intermediate state (`Processing`, not yet `Completed`) that isn't a bug, just normal timing — worth distinguishing from an actual failure before concluding something's wrong.
+
+### File Mapping
+
+- Modified: `api/JobCopilot.Contracts/Messaging/MatchCompletedEvent.cs` — added `UserId`
+- Modified: `worker/JobCopilot.Worker/Worker.cs` — declares `match-completed` queue, publishes `MatchCompletedEvent` on success only, after DB commit
+- Created: `api/JobCopilot.Api/Hubs/MatchHub.cs` — per-user SignalR group membership
+- Created: `api/JobCopilot.Api/Messaging/MatchCompletedConsumer.cs` — `BackgroundService` bridging the queue to SignalR
+- Modified: `api/JobCopilot.Api/Program.cs` — SignalR registered, consumer registered as hosted service, hub mapped at `/hubs/match`, CORS updated with `AllowCredentials()`
+- Modified: `api/JobCopilot.Api/Controllers/ApplicationsController.cs` — `GapAnalysis` added to `ApplicationResponse` and all three endpoints (deferred item from Step 21)
+- Modified: `api/JobCopilot.Api/JobCopilot.Api.csproj` — added `Microsoft.AspNetCore.SignalR` (`1.2.0`)
+- Created: `frontend/src/signalr.ts` — connection factory with JWT-based `accessTokenFactory`
+- Modified: `frontend/src/App.tsx` — new `useEffect` connecting to the hub, refetching the list on `MatchCompleted`
+- Modified: `frontend/src/types/application.ts` — added `gapAnalysis` field
+- Modified: `frontend/package.json` — added `@microsoft/signalr`
+
+**Verified:** all files read directly, matched spec with no drift (a first — no bugs found in the implementation itself this time, only a timing false-alarm during my own testing, resolved by re-polling). Builds clean across API, worker, and frontend TypeScript. Live-verified: RabbitMQ confirmed the `match-completed` message was published and consumed (ack=1); API confirmed final state (`Completed`, real score, real `GapAnalysis` text); **browser-side live push confirmed by the user directly** (Claude has no browser tool connected this session) — the applications table updated from `Pending` to `Completed` with a score, with no manual page refresh.

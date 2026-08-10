@@ -4,6 +4,7 @@ import { LoginForm } from './components/LoginForm';
 import { ApplicationForm } from './components/ApplicationForm';
 import { ApplicationList } from './components/ApplicationList';
 import { apiClient } from './api/client';
+import { createConnection } from './signalr';
 import type { ApplicationResponse } from './types/application';
 
 function App() {
@@ -23,6 +24,14 @@ function App() {
 
   useEffect(() => {
     if (token) fetchApplications();
+  }, [token, fetchApplications]);
+
+  useEffect(() => {
+    if (!token) return;
+    const connection = createConnection(token);
+    connection.on('MatchCompleted', () => fetchApplications());
+    connection.start();
+    return () => { connection.stop(); };
   }, [token, fetchApplications]);
 
   if (!token) {

@@ -1,3 +1,3 @@
 namespace JobCopilot.Contracts;
 
-public record MatchCompletedEvent(Guid ApplicationId, int MatchScore, string GapAnalysis);
+public record MatchCompletedEvent(Guid ApplicationId, Guid UserId, int MatchScore, string GapAnalysis);

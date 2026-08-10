@@ -2,7 +2,7 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Step 21 complete, verified live end-to-end, about to start Step 22
+**Last updated:** Step 22 complete, verified live end-to-end (including browser), about to start Step 23
 **Reference doc:** `Full_Stack_Developer_Transition_Roadmap.md` (roadmap), `ARCHITECTURE_CONCEPTS.md` (per-step architectural reasoning + concept definitions — read this for *why*, this file for *what/status*)
 
 ---
@@ -23,7 +23,7 @@ Small full-stack app: paste a resume + job description → AI extracts skills fr
 | Auth | JWT + BCrypt | Custom, not Identity framework. `MapInboundClaims = false` set explicitly (see Gotchas) |
 | Queue | RabbitMQ (local) → SQS/Azure Service Bus (cloud) | Manual ack, QoS=1. Working end-to-end |
 | AI matching | Google Gemini API (`gemini-3.5-flash`, free tier) | **Not** `gemini-1.5-flash` — that's fully shut down, 404s (caught in verification) |
-| Real-time | SignalR | Not yet built — still Step 22, applications currently require manual refresh to see updated status |
+| Real-time | SignalR | **Working, live-verified.** `/hubs/match`, per-user groups, second queue (`match-completed`) bridges worker → API → browser |
 | Vector search | Postgres `pgvector` extension | For embeddings-based match scoring, later phase |
 | Containerization | Docker Compose (dev) | `infra/docker-compose.dev.yml` |
 | CI/CD | GitHub Actions | Week 3 |
@@ -51,11 +51,12 @@ ai-jobsearch-copilot/
 │   │   ├── Data/AppDbContext.cs
 │   │   └── Messaging/             → MatchRequestedEvent.cs, MatchCompletedEvent.cs
 │   └── JobCopilot.Api/
-│       ├── Controllers/           → AuthController.cs, ApplicationsController.cs
+│       ├── Controllers/           → AuthController.cs, ApplicationsController.cs (now includes GapAnalysis)
 │       ├── Services/              → AuthService.cs
-│       ├── Messaging/             → IMessagePublisher.cs, RabbitMqPublisher.cs (implementation only; event types now in Contracts)
+│       ├── Messaging/             → IMessagePublisher.cs, RabbitMqPublisher.cs, MatchCompletedConsumer.cs
+│       ├── Hubs/MatchHub.cs       → SignalR hub, per-user groups
 │       ├── Migrations/            → InitialCreate
-│       ├── Program.cs             → DbContext, JWT auth, CORS, all middleware registered
+│       ├── Program.cs             → DbContext, JWT auth, CORS (+ AllowCredentials), SignalR, all middleware registered
 │       └── appsettings.Development.json  → connection string + JWT config
 ├── worker/JobCopilot.Worker/
 │   ├── Worker.cs                  → BackgroundService, RabbitMQ consumer
@@ -67,7 +68,8 @@ ai-jobsearch-copilot/
 ├── frontend/src/
 │   ├── api/client.ts             → shared axios instance, setAuthToken()
 │   ├── context/AuthContext.tsx   → in-memory token/email state, login()/logout()
-│   ├── types/application.ts      → ApplicationResponse, CreateApplicationRequest (mirrors API DTOs)
+│   ├── types/application.ts      → ApplicationResponse (+ gapAnalysis), CreateApplicationRequest
+│   ├── signalr.ts                → SignalR connection factory (JWT via accessTokenFactory)
 │   ├── components/
 │   │   ├── LoginForm.tsx         → login+register toggle form
 │   │   ├── ApplicationForm.tsx   → submit new resume+JD pairing
@@ -81,7 +83,7 @@ ai-jobsearch-copilot/
     └── docker-compose.dev.yml    → Postgres + RabbitMQ
 ```
 
-## Completed Steps (1–21)
+## Completed Steps (1–22)
 
 1. ✅ Environment setup (.NET 8, Node 20, Docker, Git)
 2. ✅ Monorepo structure (`api/ worker/ frontend/ infra/`)
@@ -111,10 +113,11 @@ ai-jobsearch-copilot/
     - **`start-services.ps1` script bug**: `-NoNewWindow` silently fails when launched headlessly (no attached console), leaving `$apiProcess` null and crashing on `.WaitForExit()`. Rewritten to redirect output to `logs/*.log` files and not block on exit.
     - Also caught and named: a self-generated `STEP_21_VERIFICATION.md` claimed "VERIFICATION COMPLETE" while its own "how to verify" section was an unperformed to-do list — build/startup success ≠ working feature.
     - **Live end-to-end test actually performed** (not just claimed): registered a user, submitted a real application via the API, polled it after a few seconds — confirmed `matchStatus: Completed`, `matchScore: 35` (plausible given the test resume genuinely lacked several skills the test JD asked for).
+22. ✅ **SignalR real-time updates — full pipeline, browser-verified live.** Worker publishes `MatchCompletedEvent` (now carries `UserId`) to a second queue (`match-completed`) on success only. New `MatchCompletedConsumer` (API-side `BackgroundService`) bridges that queue to a new `MatchHub`, which groups connections per-user by JWT `sub` claim. Frontend connects via `@microsoft/signalr`, refetches the list on `MatchCompleted`. Also closed a deferred item from Step 21: `GapAnalysis` now exposed in `ApplicationResponse`. **First step with zero drift found** — every file matched spec exactly on verification. Full chain live-tested: RabbitMQ confirmed message published+acked on the new queue, API confirmed final DB state (`Completed`, score 95, real gap-analysis text), and **the user confirmed the actual browser behavior** (table updates live, no manual refresh) — the one piece Claude structurally couldn't verify itself (no browser tool connected this session).
 
-## Next Step (22)
+## Next Step (23)
 
-Add SignalR so completed match results push to the frontend live, instead of requiring a manual refresh. Currently the full pipeline works (queue → worker → Gemini → DB), but the frontend has no way to know a result is ready except polling or reloading. Also worth exposing `GapAnalysis` in `ApplicationResponse` (currently saved to DB but not returned by the API) as part of this step, since the frontend will want to display it once real-time updates land.
+Week 3 begins: productionize. Full Docker Compose (api, worker, frontend, postgres, rabbitmq all containerized together), GitHub Actions CI/CD pipeline (lint → test → build → push), rate limiting, and the prompt-injection input hardening on `GeminiMatchingService` that's been deliberately deferred since Step 21.
 
 ## Known Gotchas / Things That Tripped Us Up (don't repeat)
 
@@ -130,11 +133,14 @@ Add SignalR so completed match results push to the frontend live, instead of req
 - **AI model version strings go stale fast.** `gemini-1.5-flash` was already fully shut down (404) by the time it was used — always verify current model availability via live search rather than assuming prior knowledge is current, especially for fast-moving AI provider APIs.
 - **`Start-Process -NoNewWindow` requires an attached console.** Fails silently (returns `$null`) when a script is launched headlessly/programmatically. Use `-RedirectStandardOutput`/`-RedirectStandardError` to log files instead for scripts that might run outside an interactive terminal.
 - **A build succeeding or a service starting is not proof a feature works.** Only exercising the actual behavior (a real request, a real response) counts as verification — a self-generated report claiming "complete" with an unperformed "how to verify" checklist is a pattern worth recognizing and distrusting.
+- **Don't mistake test timing for a bug.** Polling too soon after triggering an async AI call can show a stale intermediate state (`Processing`) that looks alarming but is just normal latency — re-check before concluding something's broken.
 
 ## Future Additions (deliberately deferred, don't lose track)
 
-- **Node.js polyglot piece**: a small Node.js service consuming `MatchCompletedEvent` (e.g., logs/webhooks on match completion) — planned as an *additive*, low-risk demonstration of polyglot architecture, added only after Step 22 (SignalR) is solid. Not the worker itself — that's staying C# for now, referencing `JobCopilot.Contracts` directly.
+- **Node.js polyglot piece**: a small Node.js service consuming `MatchCompletedEvent` (e.g., logs/webhooks on match completion) — planned as an *additive*, low-risk demonstration of polyglot architecture, added only after Step 22 (SignalR) is solid — **Step 22 is now done, this is unblocked.**
 - **Prompt-injection hardening** on `GeminiMatchingService` — resume/JD text currently goes into the prompt unescaped. Deliberately deferred to Week 3 (security hardening phase), not forgotten.
+- **Failed matches don't push a live SignalR update** — only success does. Frontend only learns of a failure on next manual fetch. Known limitation from Step 22, not yet fixed.
+- **Diagnostic logging cleanup** in `Worker.cs` `ExecuteAsync` — verbose debug-level logging left in from earlier troubleshooting, harmless but noisy. Minor cleanup, not urgent.
 
 ## User Context (for tone/pacing calibration)
 

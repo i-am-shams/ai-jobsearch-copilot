@@ -43,6 +43,7 @@ public class Worker : BackgroundService
             _logger.LogInformation("ExecuteAsync: Channel created");
             
             _channel.QueueDeclare("match-requests", durable: true, exclusive: false, autoDelete: false);
+            _channel.QueueDeclare("match-completed", durable: true, exclusive: false, autoDelete: false);
             _logger.LogInformation("ExecuteAsync: Queue declared");
             
             _channel.BasicQos(0, 1, false); // one message at a time
@@ -106,14 +107,25 @@ public class Worker : BackgroundService
             app.MatchResult.GapAnalysis = gapAnalysis;
             app.MatchResult.CompletedAt = DateTime.UtcNow;
             _logger.LogInformation("Match completed for application {AppId}: score={Score}", evt.ApplicationId, score);
+            
+            await db.SaveChangesAsync();
+            PublishCompleted(new MatchCompletedEvent(app.Id, app.UserId, score, gapAnalysis));
         }
         catch (Exception ex)
         {
             app.MatchResult.Status = MatchStatus.Failed;
             _logger.LogError(ex, "Failed to process match for application {AppId}", evt.ApplicationId);
+            await db.SaveChangesAsync();
         }
+    }
 
-        await db.SaveChangesAsync();
+    private void PublishCompleted(MatchCompletedEvent evt)
+    {
+        var json = JsonSerializer.Serialize(evt);
+        var body = Encoding.UTF8.GetBytes(json);
+        var props = _channel!.CreateBasicProperties();
+        props.Persistent = true;
+        _channel.BasicPublish("", "match-completed", props, body);
     }
 
     public override void Dispose()
