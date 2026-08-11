@@ -2,7 +2,7 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Step 22 complete, verified live end-to-end (including browser), about to start Step 23
+**Last updated:** Steps 23–26 complete, full Docker stack live-verified (success + failure paths), about to start Steps 27–28 (CI/CD)
 **Reference doc:** `Full_Stack_Developer_Transition_Roadmap.md` (roadmap), `ARCHITECTURE_CONCEPTS.md` (per-step architectural reasoning + concept definitions — read this for *why*, this file for *what/status*)
 
 ---
@@ -25,8 +25,8 @@ Small full-stack app: paste a resume + job description → AI extracts skills fr
 | AI matching | Google Gemini API (`gemini-3.5-flash`, free tier) | **Not** `gemini-1.5-flash` — that's fully shut down, 404s (caught in verification) |
 | Real-time | SignalR | **Working, live-verified.** `/hubs/match`, per-user groups, second queue (`match-completed`) bridges worker → API → browser |
 | Vector search | Postgres `pgvector` extension | For embeddings-based match scoring, later phase |
-| Containerization | Docker Compose (dev) | `infra/docker-compose.dev.yml` |
-| CI/CD | GitHub Actions | Week 3 |
+| Containerization | Docker Compose | **Full stack containerized and working**: `docker-compose.yml` at repo root (postgres, rabbitmq, api, worker, frontend). `infra/docker-compose.dev.yml` still used for lightweight local dev (Postgres+RabbitMQ only, app runs natively) |
+| CI/CD | GitHub Actions | Not yet built — Steps 27–28 |
 | Cloud IaC | Terraform | Week 4 |
 
 ## Key Architecture Decisions & Why
@@ -45,7 +45,10 @@ Small full-stack app: paste a resume + job description → AI extracts skills fr
 
 ```
 ai-jobsearch-copilot/
+├── docker-compose.yml             → FULL containerized stack (postgres, rabbitmq, api, worker, frontend) — this is the "real" deployable stack
+├── .dockerignore                  → repo-root, applies to all 3 custom images
 ├── api/
+│   ├── JobCopilot.Api/Dockerfile
 │   ├── JobCopilot.Contracts/      → shared library, referenced by both API and worker
 │   │   ├── Models/                → User.cs, Application.cs, MatchResult.cs
 │   │   ├── Data/AppDbContext.cs
@@ -55,17 +58,21 @@ ai-jobsearch-copilot/
 │       ├── Services/              → AuthService.cs
 │       ├── Messaging/             → IMessagePublisher.cs, RabbitMqPublisher.cs, MatchCompletedConsumer.cs
 │       ├── Hubs/MatchHub.cs       → SignalR hub, per-user groups
-│       ├── Migrations/            → InitialCreate
-│       ├── Program.cs             → DbContext, JWT auth, CORS (+ AllowCredentials), SignalR, all middleware registered
+│       ├── Migrations/            → InitialCreate (regenerated in Steps 23-26 — see gotchas, MigrationsAssembly fix)
+│       ├── Program.cs             → DbContext (+ MigrationsAssembly config), JWT auth, CORS (+ AllowCredentials), SignalR, all middleware registered
 │       └── appsettings.Development.json  → connection string + JWT config
 ├── worker/JobCopilot.Worker/
+│   ├── Dockerfile
 │   ├── Worker.cs                  → BackgroundService, RabbitMQ consumer
 │   ├── Services/GeminiMatchingService.cs
 │   ├── Program.cs
 │   └── appsettings.Development.json
 ├── scripts/
 │   └── start-services.ps1         → launches API + worker, logs to logs/
-├── frontend/src/
+├── frontend/
+│   ├── Dockerfile                 → multi-stage: node build → nginx serve
+│   ├── nginx.conf                 → SPA fallback routing (try_files → index.html)
+│   └── src/
 │   ├── api/client.ts             → shared axios instance, setAuthToken()
 │   ├── context/AuthContext.tsx   → in-memory token/email state, login()/logout()
 │   ├── types/application.ts      → ApplicationResponse (+ gapAnalysis), CreateApplicationRequest
@@ -114,10 +121,17 @@ ai-jobsearch-copilot/
     - Also caught and named: a self-generated `STEP_21_VERIFICATION.md` claimed "VERIFICATION COMPLETE" while its own "how to verify" section was an unperformed to-do list — build/startup success ≠ working feature.
     - **Live end-to-end test actually performed** (not just claimed): registered a user, submitted a real application via the API, polled it after a few seconds — confirmed `matchStatus: Completed`, `matchScore: 35` (plausible given the test resume genuinely lacked several skills the test JD asked for).
 22. ✅ **SignalR real-time updates — full pipeline, browser-verified live.** Worker publishes `MatchCompletedEvent` (now carries `UserId`) to a second queue (`match-completed`) on success only. New `MatchCompletedConsumer` (API-side `BackgroundService`) bridges that queue to a new `MatchHub`, which groups connections per-user by JWT `sub` claim. Frontend connects via `@microsoft/signalr`, refetches the list on `MatchCompleted`. Also closed a deferred item from Step 21: `GapAnalysis` now exposed in `ApplicationResponse`. **First step with zero drift found** — every file matched spec exactly on verification. Full chain live-tested: RabbitMQ confirmed message published+acked on the new queue, API confirmed final DB state (`Completed`, score 95, real gap-analysis text), and **the user confirmed the actual browser behavior** (table updates live, no manual refresh) — the one piece Claude structurally couldn't verify itself (no browser tool connected this session).
+23–26. ✅ **Full containerization — all 5 services in one `docker-compose.yml`, genuinely live-verified (success AND failure paths).** Batched into a single Copilot CLI invocation (efficiency request from user) rather than 4 separate ones. Dockerfiles for API, worker, frontend (multi-stage Node→nginx build), plus `nginx.conf` for SPA routing, plus the compose file with healthchecks gating startup order. **Four real, unrelated bugs found and fixed during verification:**
+    - Frontend production build (`npm run build`, never run before this point) failed on 3 files still missing `import type` from Step 19's fix — dev server never caught it since esbuild's dev transform is more lenient than the real `tsc -b` build.
+    - **Serious undocumented drift**: `RabbitMqPublisher.cs` had been silently rewritten (outside any explicit step) to swallow all exceptions — a RabbitMQ outage would let applications submit successfully while silently never processing, forever. Confirmed via `git status` this was never committed (no permanent damage). Fixed back to fail-visible behavior.
+    - Migrations silently broke after Step 21's Contracts refactor: `dotnet ef` found zero migrations against a genuinely fresh database, because EF defaults to expecting migrations in the same assembly as the `DbContext` (`JobCopilot.Contracts`), not the startup project (`JobCopilot.Api`) where they actually live. Fixed with explicit `.MigrationsAssembly("JobCopilot.Api")`, migration regenerated clean.
+    - **Copilot CLI corrupted a file it wrote**: silently replaced `Password=devpassword` with `******` in `docker-compose.yml` during the write itself (not just terminal echo) — its own secret-redaction heuristic pattern-matched a harmless placeholder. Caused a real connection-string parse error, fixed by direct edit + byte-for-byte verification.
+    - Also caught: a Docker Compose startup race — `depends_on: condition: service_healthy` wasn't sufficient on cold start; RabbitMQ's healthcheck passed slightly before its AMQP listener was truly ready, crashing API/worker on first boot. Flagged as an open item (retry-with-backoff needed in `Worker.cs`/`MatchCompletedConsumer.cs`, not yet implemented — see Future Additions).
+    - **Full stack verified genuinely working**: all 5 containers up, both a failure case (no Gemini key → `Failed` status, clean, no crash) and a success case (real key → `Completed`, score 98, real analysis) tested live against actually-running containers, frontend's nginx serving confirmed via direct HTTP request.
 
-## Next Step (23)
+## Next Step (27–28)
 
-Week 3 begins: productionize. Full Docker Compose (api, worker, frontend, postgres, rabbitmq all containerized together), GitHub Actions CI/CD pipeline (lint → test → build → push), rate limiting, and the prompt-injection input hardening on `GeminiMatchingService` that's been deliberately deferred since Step 21.
+GitHub Actions CI/CD: lint → test → build on every PR (CI), then build+push images to a registry (CD). After that: rate limiting (Step 29), prompt-injection hardening on `GeminiMatchingService` (Step 30, deferred since Step 21), and general cleanup (Step 31) — including the still-open RabbitMQ retry-on-cold-start gap from Steps 23–26.
 
 ## Known Gotchas / Things That Tripped Us Up (don't repeat)
 
@@ -134,19 +148,25 @@ Week 3 begins: productionize. Full Docker Compose (api, worker, frontend, postgr
 - **`Start-Process -NoNewWindow` requires an attached console.** Fails silently (returns `$null`) when a script is launched headlessly/programmatically. Use `-RedirectStandardOutput`/`-RedirectStandardError` to log files instead for scripts that might run outside an interactive terminal.
 - **A build succeeding or a service starting is not proof a feature works.** Only exercising the actual behavior (a real request, a real response) counts as verification — a self-generated report claiming "complete" with an unperformed "how to verify" checklist is a pattern worth recognizing and distrusting.
 - **Don't mistake test timing for a bug.** Polling too soon after triggering an async AI call can show a stale intermediate state (`Processing`) that looks alarming but is just normal latency — re-check before concluding something's broken.
+- **A build succeeding in dev mode is not proof it will succeed in production.** `npm run dev` (esbuild, lenient) can mask errors that `npm run build` (`tsc -b`, strict) catches — run the real production build at least once before assuming the frontend is deployment-ready.
+- **EF Core migrations assume the `DbContext` and its migrations live in the same assembly by default.** The moment they're split across projects (as happened when `AppDbContext` moved into `JobCopilot.Contracts`), migrations silently stop being discovered unless `.MigrationsAssembly("...")` is explicitly configured. Verify with `dotnet ef migrations list` against a genuinely fresh database, not an already-populated one — an existing database can mask this bug indefinitely.
+- **Don't trust that an AI coding tool's safety heuristics only affect its display output.** Copilot CLI's secret-redaction logic corrupted an actual file it wrote (not just its terminal echo) by masking a harmless placeholder password. Verify security-adjacent file content (connection strings, credentials, anything password-shaped) byte-for-byte after any AI tool writes it — "the write succeeded" is not the same as "the content is correct."
+- **`depends_on: condition: service_healthy` in Docker Compose is necessary but not always sufficient.** A healthcheck can report "healthy" slightly before the actual service is ready for new connections (RabbitMQ's AMQP listener vs. its Erlang-node healthcheck, here) — don't rely on compose-level health gating alone for genuinely critical startup dependencies; add retry logic in the app itself too.
 
 ## Future Additions (deliberately deferred, don't lose track)
 
-- **Node.js polyglot piece**: a small Node.js service consuming `MatchCompletedEvent` (e.g., logs/webhooks on match completion) — planned as an *additive*, low-risk demonstration of polyglot architecture, added only after Step 22 (SignalR) is solid — **Step 22 is now done, this is unblocked.**
-- **Prompt-injection hardening** on `GeminiMatchingService` — resume/JD text currently goes into the prompt unescaped. Deliberately deferred to Week 3 (security hardening phase), not forgotten.
-- **Failed matches don't push a live SignalR update** — only success does. Frontend only learns of a failure on next manual fetch. Known limitation from Step 22, not yet fixed.
+- **Node.js polyglot piece**: a small Node.js service consuming `MatchCompletedEvent` (e.g., logs/webhooks on match completion) — planned as an *additive*, low-risk demonstration of polyglot architecture. Unblocked since Step 22, not yet started.
+- **Prompt-injection hardening** on `GeminiMatchingService` — resume/JD text currently goes into the prompt unescaped. Now Step 30, not forgotten.
+- **Failed matches don't push a live SignalR update** — only success does. Known limitation from Step 22, not yet fixed.
 - **Diagnostic logging cleanup** in `Worker.cs` `ExecuteAsync` — verbose debug-level logging left in from earlier troubleshooting, harmless but noisy. Minor cleanup, not urgent.
+- **RabbitMQ connection retry-with-backoff needed in `Worker.cs` and `MatchCompletedConsumer.cs`.** Both connect eagerly at startup with no retry — a cold start where RabbitMQ isn't 100% ready yet crashes the whole host. `RabbitMqPublisher`'s lazy-connect pattern doesn't have this problem; the two `BackgroundService`s should adopt a similar resilience pattern. Found during Steps 23–26 Docker verification, not yet fixed.
 
 ## User Context (for tone/pacing calibration)
 
 - Experienced backend dev (ASP.NET/C# since 2010), rusty on modern frontend/cloud-native/DevOps, not a beginner — skip beginner analogies, use direct technical language.
 - Prefers terse "what & why" recaps after each step. **From Step 21 onward: prefers compact, bullet-style chat responses generally**, not just recaps.
-- Background: IIS deployment experience only — flagged that a "deployment has evolved" explainer is owed once we reach Docker/K8s/cloud deploy steps (Week 3–4). **Still owed, don't forget.**
+- Background: IIS deployment experience only — the "deployment has evolved" explainer (IIS vs. containers/orchestration/CI-CD) was delivered at the Step 22→23 boundary. **Delivered, not owed anymore.**
+- **From Step 20 onward: uses GitHub Copilot CLI (`copilot` command) invoked directly by Claude via shell access**, not VS Code Copilot chat. Claude writes the spec, invokes `copilot -p "..." --model claude-haiku-4.5` with scoped `--allow-tool` permissions, then verifies by reading the actual files. Batch related file-creation tasks into one Copilot CLI call where possible (explicit user preference — token/request efficiency) rather than one call per file. Avoid inlining large/quote-heavy prompts directly in the shell command (causes argument-escaping corruption) — write the spec to a file and point Copilot at it instead, or keep inline prompts short and quote-free.
 - Working step-by-step, confirms each step before moving to the next.
 - **From Step 16 onward: writes code via GitHub Copilot directly in the repo**, not chat-pasted. Claude verifies by reading actual files (has direct filesystem access via Desktop Commander/Filesystem MCP tools), not by trusting chat summaries alone.
 - Maintains `docs/ARCHITECTURE_CONCEPTS.md` in parallel — every step (going forward, including retroactively for 1–16) gets an entry there: Architectural Viewpoint & Arguments, Plain-Language Definitions, File Mapping. Claude writes this proactively without being asked each time.

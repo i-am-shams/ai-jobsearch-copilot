@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: jobcopilot
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: jobcopilot
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobcopilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: jobcopilot
+      RABBITMQ_DEFAULT_PASS: devpassword
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: api/JobCopilot.Api/Dockerfile
+    ports:
+      - "5220:8080"
+    environment:
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=devpassword"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: jobcopilot
+      RabbitMq__Password: devpassword
+      Jwt__Key: "a-long-random-secret-min-32-chars-change-later"
+      Jwt__Issuer: "JobCopilotApi"
+      Jwt__Audience: "JobCopilotClient"
+      Jwt__ExpiryMinutes: "60"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/JobCopilot.Worker/Dockerfile
+    environment:
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=devpassword"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: jobcopilot
+      RabbitMq__Password: devpassword
+      Gemini__ApiKey: ${GEMINI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

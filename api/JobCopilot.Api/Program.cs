@@ -14,7 +14,9 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("Default"),
+        b => b.MigrationsAssembly("JobCopilot.Api")));
 
 builder.Services.AddScoped<AuthService>();
 

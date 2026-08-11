@@ -6,9 +6,12 @@ using JobCopilot.Contracts;
 namespace JobCopilot.Api.Messaging;
 
 /// <summary>
-/// Ultra-defensive RabbitMQ publisher.
-/// Never throws any exceptions.
-/// Connects lazily on first publish attempt.
+/// Publishes MatchRequested events to RabbitMQ. Connects lazily (tolerant of
+/// RabbitMQ not being ready yet at API startup, e.g. during docker compose
+/// startup ordering), but deliberately does NOT swallow exceptions — a failed
+/// publish must be visible to the caller, since a silently-dropped message
+/// means a user's submitted application would sit in "Pending" forever with
+/// no indication anything went wrong.
 /// </summary>
 public class RabbitMqPublisher : IMessagePublisher, IDisposable
 {
@@ -20,14 +23,7 @@ public class RabbitMqPublisher : IMessagePublisher, IDisposable
 
     public RabbitMqPublisher(IConfiguration config)
     {
-        try
-        {
-            _config = config;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[RabbitMqPublisher] Constructor error: {ex.Message}");
-        }
+        _config = config;
     }
 
     private void EnsureConnection()
@@ -37,70 +33,36 @@ public class RabbitMqPublisher : IMessagePublisher, IDisposable
             if (_connection != null && _connection.IsOpen && _channel != null && _channel.IsOpen)
                 return;
 
-            try
+            var factory = new ConnectionFactory
             {
-                var host = _config?["RabbitMq:Host"] ?? "localhost";
-                var port = int.TryParse(_config?["RabbitMq:Port"], out var p) ? p : 5672;
-                var username = _config?["RabbitMq:Username"] ?? "jobcopilot";
-                var password = _config?["RabbitMq:Password"] ?? "devpassword";
+                HostName = _config["RabbitMq:Host"] ?? "localhost",
+                Port = int.Parse(_config["RabbitMq:Port"] ?? "5672"),
+                UserName = _config["RabbitMq:Username"] ?? "jobcopilot",
+                Password = _config["RabbitMq:Password"] ?? "devpassword"
+            };
 
-                var factory = new ConnectionFactory
-                {
-                    HostName = host,
-                    Port = port,
-                    UserName = username,
-                    Password = password
-                };
-
-                _connection = factory.CreateConnection();
-                _channel = _connection.CreateModel();
-
-                _channel.QueueDeclare(QueueName, durable: true, exclusive: false, autoDelete: false);
-                Console.WriteLine($"[RabbitMqPublisher] Connected and declared queue '{QueueName}'");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[RabbitMqPublisher] Connection error: {ex.Message}");
-                _connection = null;
-                _channel = null;
-            }
+            _connection = factory.CreateConnection();
+            _channel = _connection.CreateModel();
+            _channel.QueueDeclare(QueueName, durable: true, exclusive: false, autoDelete: false);
         }
     }
 
     public void PublishMatchRequested(MatchRequestedEvent evt)
     {
-        try
+        lock (_lock)
         {
-            lock (_lock)
-            {
-                EnsureConnection();
-                if (_channel?.IsOpen == true)
-                {
-                    var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(evt));
-                    var props = _channel.CreateBasicProperties();
-                    props.Persistent = true;
-                    _channel.BasicPublish("", QueueName, props, body);
-                    Console.WriteLine($"[RabbitMqPublisher] Published ApplicationId: {evt.ApplicationId}");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[RabbitMqPublisher] Publish error: {ex.Message}");
+            EnsureConnection();
+            var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(evt));
+            var props = _channel!.CreateBasicProperties();
+            props.Persistent = true;
+            _channel.BasicPublish("", QueueName, props, body);
         }
     }
 
     public void Dispose()
     {
-        try
-        {
-            lock (_lock)
-            {
-                _channel?.Dispose();
-                _connection?.Dispose();
-            }
-        }
-        catch { }
+        _channel?.Dispose();
+        _connection?.Dispose();
     }
 }
 

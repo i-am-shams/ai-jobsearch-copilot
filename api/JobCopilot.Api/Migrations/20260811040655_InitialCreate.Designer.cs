@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace JobCopilot.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260802074016_InitialCreate")]
+    [Migration("20260811040655_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -25,7 +25,7 @@ namespace JobCopilot.Api.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("JobCopilot.Api.Models.Application", b =>
+            modelBuilder.Entity("JobCopilot.Contracts.Application", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -60,7 +60,7 @@ namespace JobCopilot.Api.Migrations
                     b.ToTable("Applications");
                 });
 
-            modelBuilder.Entity("JobCopilot.Api.Models.MatchResult", b =>
+            modelBuilder.Entity("JobCopilot.Contracts.MatchResult", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -89,7 +89,7 @@ namespace JobCopilot.Api.Migrations
                     b.ToTable("MatchResults");
                 });
 
-            modelBuilder.Entity("JobCopilot.Api.Models.User", b =>
+            modelBuilder.Entity("JobCopilot.Contracts.User", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -114,9 +114,9 @@ namespace JobCopilot.Api.Migrations
                     b.ToTable("Users");
                 });
 
-            modelBuilder.Entity("JobCopilot.Api.Models.Application", b =>
+            modelBuilder.Entity("JobCopilot.Contracts.Application", b =>
                 {
-                    b.HasOne("JobCopilot.Api.Models.User", "User")
+                    b.HasOne("JobCopilot.Contracts.User", "User")
                         .WithMany("Applications")
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -125,23 +125,23 @@ namespace JobCopilot.Api.Migrations
                     b.Navigation("User");
                 });
 
-            modelBuilder.Entity("JobCopilot.Api.Models.MatchResult", b =>
+            modelBuilder.Entity("JobCopilot.Contracts.MatchResult", b =>
                 {
-                    b.HasOne("JobCopilot.Api.Models.Application", "Application")
+                    b.HasOne("JobCopilot.Contracts.Application", "Application")
                         .WithOne("MatchResult")
-                        .HasForeignKey("JobCopilot.Api.Models.MatchResult", "ApplicationId")
+                        .HasForeignKey("JobCopilot.Contracts.MatchResult", "ApplicationId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Application");
                 });
 
-            modelBuilder.Entity("JobCopilot.Api.Models.Application", b =>
+            modelBuilder.Entity("JobCopilot.Contracts.Application", b =>
                 {
                     b.Navigation("MatchResult");
                 });
 
-            modelBuilder.Entity("JobCopilot.Api.Models.User", b =>
+            modelBuilder.Entity("JobCopilot.Contracts.User", b =>
                 {
                     b.Navigation("Applications");
                 });
