@@ -730,3 +730,49 @@ After all these changes, the entire local Docker Compose stack was rebuilt from 
 - Modified: `api/JobCopilot.Api/Program.cs` — added automatic `db.Database.Migrate()` on startup
 
 **Verified, not just built:** full stack rebuilt from a genuinely fresh volume, tested end-to-end through the new nginx-proxied path (not the old direct-API path) — register, submit, poll for completion all confirmed working. `Completed` status, real score, real gap-analysis text.
+
+
+---
+
+## Step 33: Live VPS Deployment — Real Domain, Zero Disruption to Co-Hosted Project
+
+### Architectural Viewpoint & Arguments
+
+The user's VPS already runs a separate, unrelated production project (<other-app>) behind its own Dockerized nginx (`<other-app>-nginx`). The core constraint for this step: **deploy a second, independent application alongside it without modifying anything belonging to the existing project.**
+
+**Discovery before action.** Rather than guessing at the VPS's structure, an existing operations runbook for the co-hosted project (`docs/29_vps_production_operations_runbook.md`) was read first. This surfaced several facts that meaningfully simplified the plan and reduced risk, each verified live before being relied on:
+- A **wildcard DNS record** (`*.dentflowbd.com → <VPS IP>`) already existed — a new subdomain needed zero new DNS configuration.
+- A **wildcard TLS certificate** (`*.dentflowbd.com`, via Cloudflare DNS-01 challenge) already existed — confirmed directly via `openssl x509 ... -noout -text | grep 'Subject Alternative Name'` before relying on it, not assumed from documentation alone. Zero new certbot work needed.
+- The existing reverse proxy runs **inside Docker** (not as a host-level service) — meaning it cannot reach anything via `127.0.0.1` (that's the *container's own* loopback, not the host's). This ruled out the original plan (proxying to loopback-bound ports) before it was ever attempted.
+- The existing Docker network is a **named, non-default bridge network** (confirmed via `docker network ls` to be `<other-app>_<other-app>-private`, not a guessable default name) — this is what actually made the safest possible integration path available.
+
+**The key architectural decision: join a shared external Docker network, rather than editing the co-hosted project's configuration at all.** Docker Compose allows a service to declare a network as `external: true`, referencing one that already exists rather than creating it. By adding this project's `frontend` container to the existing `<other-app>_<other-app>-private` network (a change entirely within *this* project's own compose file), the existing reverse proxy can resolve and reach the new frontend container by its container name — with **zero lines changed in the co-hosted project's `docker-compose.yml`**. This was the single most important risk-reduction decision in the whole step: the riskiest thing originally planned (editing a live production compose file) became entirely unnecessary once the actual network topology was understood, rather than assumed.
+
+**New nginx site config was deliberately written to mirror the existing config's exact structure and style** (same HTTP→HTTPS redirect block, same ACME challenge location, same hidden-file denial, same WebSocket header pattern already in use for the co-hosted project's own SignalR/Blazor Server circuit) — rather than writing something novel. A new, unfamiliar-looking config is harder for the project owner to review and trust; matching the established local convention exactly makes the diff trivial to reason about, which matters more on a live server than stylistic preference.
+
+**Validation before every reload, every time**, following the pattern already established in the co-hosted project's own runbook (`nginx -t` before `nginx -s reload`) rather than inventing a new safety process. The first `nginx -t` attempt correctly failed (`host not found in upstream "jobcopilot-frontend"`) — because nginx resolves upstream hostnames at config-load time, and the referenced container didn't exist yet. This was expected, not a bug: the correct sequencing is *start the new stack first, validate second* when introducing a brand-new upstream, not the reverse.
+
+**Container registry authentication used a narrowly-scoped Personal Access Token** (`read:packages` only, explicit expiration set), not the developer's own GitHub credentials and not a broadly-scoped token. The first PAT the user generated included `repo` (full read/write access to all repositories) and `write:packages` — both far beyond what a VPS that only ever *pulls* images needs. Caught and corrected before use: least-privilege access for a credential that will sit in a remote server's Docker credential store indefinitely is a real security practice, not paranoia — a compromised VPS should not become a means of compromising the developer's entire GitHub account.
+
+### A real, live, multi-layer verification — not a single test
+
+Verification happened in stages, each one actually exercised rather than assumed from the previous:
+1. **`nginx -t` / reload** — config validity confirmed before any live traffic could be affected
+2. **Co-hosted project's own health check** (`curl https://pms.dentflowbd.com/health` → `200`) — confirmed *immediately after* the reload, to catch any regression to the existing project as early as possible, not discovered later
+3. **New subdomain reachability** (`curl -I https://jobcopilot.dentflowbd.com/` → `200`, correct `content-length` matching the actual built `index.html`)
+4. **Full auth + async pipeline over the real domain**: register → login → submit application → poll → `Completed` with a real Gemini-generated score and gap analysis, via `curl` from the VPS itself
+5. **Live SignalR push confirmed by the user directly, in an actual browser**, over the real domain (`wss://jobcopilot.dentflowbd.com/hubs/match`, passing through *two* layers of nginx — the co-hosted project's outer proxy, then this project's own frontend-container proxy) — the one piece Claude could not verify itself (no browser tool connected this session), and the most failure-prone piece architecturally, since WebSocket upgrade headers must be forwarded correctly at *every* proxy hop or the connection silently falls back to a degraded transport or fails outright.
+
+### Plain-Language Definitions
+
+- **External network (Docker Compose):** a network declared with `external: true` tells Compose "this network already exists, managed elsewhere — attach to it, don't try to create it." This is what let two entirely separate `docker-compose.yml` files, in different directories, deployed independently, still let their containers reach each other by name.
+- **Upstream (nginx):** the backend nginx forwards requests to (via `proxy_pass`). Nginx resolves upstream hostnames when the config is *loaded* (including on `nginx -t`), not lazily per-request by default — which is why an upstream referencing a not-yet-existing container fails validation immediately, rather than only failing when a real request comes in.
+- **Least-privilege credential scoping:** granting a credential only the specific permissions it actually needs for its specific purpose, not the broadest permissions conveniently available. A token that can only *read* container images is a fundamentally smaller liability if leaked than one that can also *write* to every private repository the account owns.
+- **DNS-01 vs. HTTP-01 challenge (Let's Encrypt):** HTTP-01 proves domain ownership by serving a specific file over plain HTTP on the domain itself; DNS-01 proves it by creating a specific DNS TXT record instead. DNS-01 is what makes *wildcard* certificates possible (`*.example.com` — HTTP-01 cannot issue wildcards at all), which is why the existing certificate already covered a brand-new subdomain with no additional action.
+
+### File Mapping
+
+- Created (on the VPS, not in this git repo — deliberately, since these contain environment-specific paths and reference secrets): `/opt/jobcopilot/docker-compose.yml` (uses `image:` referencing `ghcr.io` tags, not `build:` — the VPS pulls pre-built CI/CD images rather than building from source), `/opt/jobcopilot/.env` (real production secrets, generated fresh — never the `devpassword`/dev-JWT-key placeholders from local development)
+- Created: `/opt/<other-app>/nginx/conf.d/jobcopilot.conf` — new file only, existing `<other-app>.conf` never touched
+- **Not modified at all**: the co-hosted project's `docker-compose.yml`, any of its existing nginx config, its database, its running containers
+- **Verified, not just deployed**: full pipeline confirmed live over the real public domain — auth, async matching via Postgres/RabbitMQ/worker/Gemini all running on the VPS, and live SignalR push confirmed by the user in a real browser through both proxy layers. Co-hosted project's own health check confirmed unaffected immediately after the nginx reload.
