@@ -594,3 +594,48 @@ Running `dotnet ef database update` against a genuinely fresh database (a new Do
 - Modified: `api/JobCopilot.Api/Program.cs` (added explicit `MigrationsAssembly("JobCopilot.Api")`)
 - Deleted + regenerated: `api/JobCopilot.Api/Migrations/` (fresh `InitialCreate`, correctly referencing `JobCopilot.Contracts.*` entity names throughout, not just in the top-level `using`)
 - **Verified, not just built:** full 5-container stack (`docker compose up`) — both a genuine failure case (no API key: `Failed` status, clean error, no crash) and a genuine success case (real Gemini key: `Completed`, score 98, real gap-analysis text) tested live against the actual running containers, plus the frontend container's nginx serving confirmed via direct HTTP request.
+
+
+---
+
+## Steps 27–28: CI/CD Pipelines + First Real Tests
+
+### Architectural Viewpoint & Arguments
+
+CI (`ci.yml`) runs on every push and PR to `master`; CD (`cd.yml`) runs only on push to `master`.
+
+- **Why the split, not one workflow:** CI's job is to answer "is this change safe to merge" — it should run on PRs too, before anything is merged. CD's job is to answer "should this now-merged change actually be deployed" — running it on PRs would build and push images for code that hasn't even been approved yet. Separating them means a PR can be validated without ever touching the container registry.
+
+The test project (`JobCopilot.Api.Tests`) contains genuinely new tests — the **first tests written anywhere in this project**, 27 steps in.
+
+- **Why this is worth naming explicitly, not glossing over:** a CI pipeline with a "test" stage that runs zero actual tests isn't meaningfully testing anything — `dotnet test` against a solution with no test project would succeed trivially, giving false confidence. Rather than let the CI pipeline's test stage be decorative, a small but real test suite (`AuthService`'s password hashing and JWT generation — deliberately chosen as the most safety-critical, easily-unit-testable logic in the project) was added alongside it. Four tests, all meaningful: hashing produces different output for the same input (proves salting works), verification succeeds for correct passwords, fails for incorrect ones, and token generation produces a well-formed, non-empty result.
+- **Why `AuthService` specifically, not broader coverage yet:** it's pure logic with no database or network dependency — the cheapest, highest-value place to start a test suite. Testing `ApplicationsController` or `GeminiMatchingService` properly would need mocking `AppDbContext` and `HttpClient` respectively — legitimate future work, but a heavier lift than justified for "establish that testing exists and works" as a first step.
+
+CD pushes images to **GitHub Container Registry (`ghcr.io`)**, authenticated via `secrets.GITHUB_TOKEN` — not a separate Docker Hub account or manually-created credential.
+
+- **Why:** `GITHUB_TOKEN` is automatically provided by GitHub Actions for every workflow run, scoped to that repository, with no separate signup or secret management needed. For a project already hosted on GitHub, this is the lowest-friction registry choice — the credential is already there, already scoped correctly, and already rotates automatically.
+- **Images tagged with both `latest` and `${{ github.sha }}`:** `latest` is convenient for "give me the current version," but is mutable and gives no way to know exactly what code produced a given running container. Tagging with the commit SHA too means any deployed image can be traced back to the exact commit that built it — a real production concern, not just a nice-to-have.
+
+### Two real bugs found (both caught by actually building/running, not just creating files)
+
+**1. A spec error — this one was Claude's mistake, not Copilot's drift, worth being honest about.** The initial `AuthServiceTests.cs` content (written by Claude, in the prompt file given to Copilot CLI) referenced `Models.User` — the pre-Step-21 namespace, before the Contracts extraction. This was already stale by the time it was written, and would have failed to compile. Caught immediately by actually running `dotnet build` against the new test project rather than assuming a Copilot-CLI-created file was correct without checking. **Lesson:** verification discipline has to apply to Claude's own specs too, not just Copilot's implementations — a wrong instruction produces a wrong result just as easily as a wrong implementation of a right instruction.
+
+**2. Missing `ImplicitUsings` in the test project's `.csproj`.** Without it, `Dictionary<,>` and `Guid` weren't recognized without explicit `using System;`/`using System.Collections.Generic;` statements. Fixed by enabling `<ImplicitUsings>enable</ImplicitUsings>` — the standard, idiomatic setting for any modern .NET project (and one already implicitly present via the SDK-style project template used elsewhere in this codebase, but missed when hand-specifying a new `.csproj` from scratch).
+
+### A tooling note: Copilot CLI got stuck on directory creation
+
+The first invocation for this step hung indefinitely trying to create files inside `.github/workflows/` and `api/JobCopilot.Api.Tests/` — directories that didn't exist yet. It attempted several different approaches (visible in its own narration) without completing. Resolved by creating the parent directories directly first (`New-Item -ItemType Directory`), then re-invoking Copilot CLI so it only had to write into already-existing paths. **Worth remembering as a pattern:** if Copilot CLI is only granted `write` tool permission (not shell), it may not reliably create nested new directories on its own — pre-creating the directory structure removes that ambiguity entirely.
+
+### Plain-Language Definitions
+
+- **CI (Continuous Integration):** automatically building and testing every proposed change (every push/PR), to catch problems before they're merged — the "is this safe" gate.
+- **CD (Continuous Deployment/Delivery):** automatically packaging and shipping an already-merged change further downstream (here: building and pushing container images) — the "ship it" step, distinct from and downstream of CI.
+- **Container registry:** a hosted storage service for Docker images — analogous to how GitHub hosts source code, a registry hosts built images so they can be pulled and run anywhere (a cloud host, another developer's machine, a CI runner) without rebuilding from source each time.
+- **`secrets.GITHUB_TOKEN`:** a credential GitHub Actions automatically generates for each workflow run, scoped to that specific repository, requiring no manual setup — distinct from a Personal Access Token, which a user creates and manages themselves.
+- **Test double / mocking:** a fake, controlled stand-in for a real dependency (a database, an HTTP API) used in a test so the test exercises only the logic being tested, not the reliability of everything it depends on. Not used yet in this project's test suite — `AuthService` was chosen specifically because it doesn't need one.
+
+### File Mapping
+
+- Created: `api/JobCopilot.Api.Tests/JobCopilot.Api.Tests.csproj`, `AuthServiceTests.cs`
+- Created: `.github/workflows/ci.yml`, `cd.yml`
+- **Verified, not just built:** `dotnet build` and `dotnet test` both run locally against the new test project — 4/4 tests passing. `dotnet build` run in Release config for both API and worker (matching exactly what CI does) — both clean. Frontend build already confirmed clean from Steps 23–26. **Confirmed on actual GitHub Actions infrastructure** (screenshot reviewed): both CI (47s) and CD (53s) passed green on their first real run — meaningful given how many bugs were caught and fixed locally before ever pushing, across this and the prior containerization step.

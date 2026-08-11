@@ -2,7 +2,7 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Steps 23–26 complete, full Docker stack live-verified (success + failure paths), about to start Steps 27–28 (CI/CD)
+**Last updated:** Steps 27–28 complete, CI + CD both confirmed passing on real GitHub Actions runs, about to start Step 29 (rate limiting)
 **Reference doc:** `Full_Stack_Developer_Transition_Roadmap.md` (roadmap), `ARCHITECTURE_CONCEPTS.md` (per-step architectural reasoning + concept definitions — read this for *why*, this file for *what/status*)
 
 ---
@@ -26,7 +26,7 @@ Small full-stack app: paste a resume + job description → AI extracts skills fr
 | Real-time | SignalR | **Working, live-verified.** `/hubs/match`, per-user groups, second queue (`match-completed`) bridges worker → API → browser |
 | Vector search | Postgres `pgvector` extension | For embeddings-based match scoring, later phase |
 | Containerization | Docker Compose | **Full stack containerized and working**: `docker-compose.yml` at repo root (postgres, rabbitmq, api, worker, frontend). `infra/docker-compose.dev.yml` still used for lightweight local dev (Postgres+RabbitMQ only, app runs natively) |
-| CI/CD | GitHub Actions | Not yet built — Steps 27–28 |
+| CI/CD | GitHub Actions | **Working, confirmed on real runs.** `ci.yml` (build+test, all branches/PRs), `cd.yml` (build+push to ghcr.io, master only) |
 | Cloud IaC | Terraform | Week 4 |
 
 ## Key Architecture Decisions & Why
@@ -45,9 +45,13 @@ Small full-stack app: paste a resume + job description → AI extracts skills fr
 
 ```
 ai-jobsearch-copilot/
+├── .github/workflows/
+│   ├── ci.yml                     → build + test, runs on push/PR
+│   └── cd.yml                     → build + push images to ghcr.io, master only
 ├── docker-compose.yml             → FULL containerized stack (postgres, rabbitmq, api, worker, frontend) — this is the "real" deployable stack
 ├── .dockerignore                  → repo-root, applies to all 3 custom images
 ├── api/
+│   ├── JobCopilot.Api.Tests/      → xUnit, AuthService tests (first tests in the project)
 │   ├── JobCopilot.Api/Dockerfile
 │   ├── JobCopilot.Contracts/      → shared library, referenced by both API and worker
 │   │   ├── Models/                → User.cs, Application.cs, MatchResult.cs
@@ -128,10 +132,11 @@ ai-jobsearch-copilot/
     - **Copilot CLI corrupted a file it wrote**: silently replaced `Password=devpassword` with `******` in `docker-compose.yml` during the write itself (not just terminal echo) — its own secret-redaction heuristic pattern-matched a harmless placeholder. Caused a real connection-string parse error, fixed by direct edit + byte-for-byte verification.
     - Also caught: a Docker Compose startup race — `depends_on: condition: service_healthy` wasn't sufficient on cold start; RabbitMQ's healthcheck passed slightly before its AMQP listener was truly ready, crashing API/worker on first boot. Flagged as an open item (retry-with-backoff needed in `Worker.cs`/`MatchCompletedConsumer.cs`, not yet implemented — see Future Additions).
     - **Full stack verified genuinely working**: all 5 containers up, both a failure case (no Gemini key → `Failed` status, clean, no crash) and a success case (real key → `Completed`, score 98, real analysis) tested live against actually-running containers, frontend's nginx serving confirmed via direct HTTP request.
+27–28. ✅ **CI/CD pipelines + first real tests in the project.** `ci.yml` (build API+worker, type-check+build frontend, run tests, all on push/PR) and `cd.yml` (build+push all 3 images to `ghcr.io`, master only, tagged with both `latest` and commit SHA). Added `JobCopilot.Api.Tests` — 4 genuine xUnit tests against `AuthService` (password hashing/verification, JWT generation) — the project's first tests after 27 steps, added specifically so CI's "test" stage isn't decorative. Two bugs caught before ever pushing: a spec error (Claude's own mistake — referenced the pre-Contracts `Models.User` instead of `JobCopilot.Contracts.User`) and a missing `ImplicitUsings` in the new test `.csproj`. Also hit a Copilot CLI limitation: it hung indefinitely trying to create files in not-yet-existing directories (`.github/workflows/`, the new test project folder) when only granted `write` permission — resolved by pre-creating directories manually before invoking it. **Confirmed on real GitHub Actions infrastructure** (not just local): both CI (47s) and CD (53s) passed green on their very first run.
 
-## Next Step (27–28)
+## Next Step (29)
 
-GitHub Actions CI/CD: lint → test → build on every PR (CI), then build+push images to a registry (CD). After that: rate limiting (Step 29), prompt-injection hardening on `GeminiMatchingService` (Step 30, deferred since Step 21), and general cleanup (Step 31) — including the still-open RabbitMQ retry-on-cold-start gap from Steps 23–26.
+Rate limiting on the API — protects against abuse, especially relevant given every request that creates an `Application` triggers a real (metered) Gemini API call downstream. After that: Step 30 (prompt-injection hardening on `GeminiMatchingService`, deferred since Step 21) and Step 31 (cleanup — includes the still-open RabbitMQ cold-start retry gap from Steps 23–26, and the noisy diagnostic logging in `Worker.cs`).
 
 ## Known Gotchas / Things That Tripped Us Up (don't repeat)
 
@@ -152,6 +157,9 @@ GitHub Actions CI/CD: lint → test → build on every PR (CI), then build+push 
 - **EF Core migrations assume the `DbContext` and its migrations live in the same assembly by default.** The moment they're split across projects (as happened when `AppDbContext` moved into `JobCopilot.Contracts`), migrations silently stop being discovered unless `.MigrationsAssembly("...")` is explicitly configured. Verify with `dotnet ef migrations list` against a genuinely fresh database, not an already-populated one — an existing database can mask this bug indefinitely.
 - **Don't trust that an AI coding tool's safety heuristics only affect its display output.** Copilot CLI's secret-redaction logic corrupted an actual file it wrote (not just its terminal echo) by masking a harmless placeholder password. Verify security-adjacent file content (connection strings, credentials, anything password-shaped) byte-for-byte after any AI tool writes it — "the write succeeded" is not the same as "the content is correct."
 - **`depends_on: condition: service_healthy` in Docker Compose is necessary but not always sufficient.** A healthcheck can report "healthy" slightly before the actual service is ready for new connections (RabbitMQ's AMQP listener vs. its Erlang-node healthcheck, here) — don't rely on compose-level health gating alone for genuinely critical startup dependencies; add retry logic in the app itself too.
+- **A "test" stage in CI is meaningless if there are no real tests to run.** `dotnet test` against a solution with zero test projects succeeds trivially, giving false confidence — worth adding genuine tests before wiring up CI's test stage, not after.
+- **Claude's own specs can be wrong too, not just Copilot's implementations.** A stale namespace reference (`Models.User` instead of the post-refactor `JobCopilot.Contracts.User`) was written directly into a prompt file by Claude — caught the same way everything else is caught: by actually building it, not by trusting the source.
+- **Copilot CLI with only `write` tool permission may not reliably create new nested directories.** It hung indefinitely attempting several approaches when asked to create files in `.github/workflows/` and a new test project folder that didn't exist yet. Pre-create parent directories manually before invoking Copilot CLI for file-creation tasks in genuinely new folders.
 
 ## Future Additions (deliberately deferred, don't lose track)
 
@@ -160,6 +168,7 @@ GitHub Actions CI/CD: lint → test → build on every PR (CI), then build+push 
 - **Failed matches don't push a live SignalR update** — only success does. Known limitation from Step 22, not yet fixed.
 - **Diagnostic logging cleanup** in `Worker.cs` `ExecuteAsync` — verbose debug-level logging left in from earlier troubleshooting, harmless but noisy. Minor cleanup, not urgent.
 - **RabbitMQ connection retry-with-backoff needed in `Worker.cs` and `MatchCompletedConsumer.cs`.** Both connect eagerly at startup with no retry — a cold start where RabbitMQ isn't 100% ready yet crashes the whole host. `RabbitMqPublisher`'s lazy-connect pattern doesn't have this problem; the two `BackgroundService`s should adopt a similar resilience pattern. Found during Steps 23–26 Docker verification, not yet fixed.
+- **EF Core package version mismatch warnings** (`MSB3277`) between `JobCopilot.Api` (8.0.11) and other transitive references (8.0.29) — non-blocking, surfaced when building the new test project. Worth reconciling to a single consistent EF Core version across the whole solution during Step 31 cleanup.
 
 ## User Context (for tone/pacing calibration)
 
