@@ -12,6 +12,162 @@
 - New nginx site config: `/opt/<other-app>/nginx/conf.d/jobcopilot.conf` (new file, existing config for the other project untouched)
 - To redeploy manually right now (until Step 35 automates this): `ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose pull && docker compose up -d"`
 
+## VPS Reference — full detail (so this isn't only reconstructable by SSHing in)
+
+**Access:** `<deploy-user>@144.79.132.100`, Ubuntu 24.04, SSH key already configured on this machine. `<deploy-user>` is in the `docker` group (no sudo for docker commands); sudo needs an interactive password (use `ssh -t` if ever needed).
+
+**Directory layout:** `/opt/<project>` convention, matching the co-hosted <other-app> project. Ours: `/opt/jobcopilot/` (owned by `<deploy-user>`, created via one-time `sudo mkdir` + `chown`).
+
+**Docker network:** the co-hosted project's nginx runs *inside Docker*, on a named bridge network `<other-app>_<other-app>-private` (confirmed via `docker network ls` — not a guessable default name). Our `frontend` service joins this as an `external: true` network so the co-hosted nginx can reach it by container name — **zero changes to the co-hosted project's own files**.
+
+**DNS + TLS:** `*.dentflowbd.com` wildcard DNS and wildcard Let's Encrypt cert (via Cloudflare DNS-01) already existed for the co-hosted project — covers our subdomain too, confirmed via `openssl x509 ... | grep 'Subject Alternative Name'` before relying on it. **Dependency worth knowing**: our subdomain's TLS relies on the co-hosted project's existing certbot renewal automation continuing to run — we didn't set up our own renewal, we're riding on theirs.
+
+**Image registry:** `ghcr.io/i-am-shams/ai-jobsearch-copilot-{api,worker,frontend}:latest`. VPS authenticates via `docker login ghcr.io` using a PAT scoped to `read:packages` only (with an expiration set) — already run once, credential is cached in the VPS's Docker config, shouldn't need repeating unless the token expires or is revoked.
+
+**`/opt/jobcopilot/docker-compose.yml`** (real content, verified live on the VPS — secrets referenced via `${VAR}`, actual values only in `.env`, never in this file or in git):
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    container_name: jobcopilot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jobcopilot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: jobcopilot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobcopilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: jobcopilot-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: jobcopilot
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  api:
+    image: ghcr.io/i-am-shams/ai-jobsearch-copilot-api:latest
+    container_name: jobcopilot-api
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=${POSTGRES_PASSWORD}"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: jobcopilot
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      Jwt__Key: ${JWT_KEY}
+      Jwt__Issuer: "JobCopilotApi"
+      Jwt__Audience: "JobCopilotClient"
+      Jwt__ExpiryMinutes: "60"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+  worker:
+    image: ghcr.io/i-am-shams/ai-jobsearch-copilot-worker:latest
+    container_name: jobcopilot-worker
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=${POSTGRES_PASSWORD}"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: jobcopilot
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      Gemini__ApiKey: ${GEMINI_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+  frontend:
+    image: ghcr.io/i-am-shams/ai-jobsearch-copilot-frontend:latest
+    container_name: jobcopilot-frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    networks:
+      - default
+      - <other-app>-private
+networks:
+  default:
+    name: jobcopilot-internal
+  <other-app>-private:
+    external: true
+    name: <other-app>_<other-app>-private
+volumes:
+  pgdata:
+```
+
+**`/opt/jobcopilot/.env`** (real values NOT documented here deliberately — never put real secrets in this git repo. Keys present: `POSTGRES_PASSWORD`, `RABBITMQ_PASSWORD`, `JWT_KEY`, `GEMINI_API_KEY`. **Note**: this is entered manually and is NOT synced with the local dev `user-secrets` Gemini key — if the Gemini key is ever rotated locally, it must be updated on the VPS separately too, nothing automates this yet.)
+
+**`/opt/<other-app>/nginx/conf.d/jobcopilot.conf`** (new file we created; the co-hosted project's own `<other-app>.conf` is untouched):
+```nginx
+server {
+    listen 80;
+    server_name jobcopilot.dentflowbd.com;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    location ~ /\. {
+        return 404;
+    }
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name jobcopilot.dentflowbd.com;
+    ssl_certificate /etc/letsencrypt/live/dentflowbd.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dentflowbd.com/privkey.pem;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    location ~ /\. {
+        return 404;
+    }
+    location / {
+        proxy_pass http://jobcopilot-frontend:80;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+```
+
+**Common operational commands:**
+```bash
+# redeploy after a new image push
+ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose pull && docker compose up -d"
+
+# check status
+ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose ps"
+
+# view logs
+ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose logs -f worker"  # or api/frontend/postgres/rabbitmq
+
+# validate + reload nginx after any config change (ALWAYS in this order)
+ssh <deploy-user>@144.79.132.100 "docker exec <other-app>-nginx nginx -t"
+ssh <deploy-user>@144.79.132.100 "docker exec <other-app>-nginx nginx -s reload"
+```
+
+> **Working preferences, tooling gotchas, and standing rules for shared-infrastructure work now live in `AGENTS.md` at the repo root** (auto-read by Claude Code and similar tools). This file covers project state only — what's done, what's next, and the deployed facts.
+
 ## Week 4 Plan Pivot (important — read before continuing)
 
 Original plan was Terraform + Azure. **Changed**: AWS/Azure/GCP all require a credit card at signup even for free-tier-only usage (confirmed via research) — the user has no card available, full stop. **New plan: deploy to the user's own existing VPS** (already running a separate SaaS project, Docker installed, SSH key access already set up, nginx reverse proxy already in front of the existing project, 4GB+ free RAM, user has a spare domain ready).
@@ -171,33 +327,9 @@ ai-jobsearch-copilot/
 
 TLS is already covered (existing wildcard cert) — nothing to do there. Remaining: extend `cd.yml` so pushes to `master` auto-deploy to the VPS (currently manual: `ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose pull && docker compose up -d"`), basic monitoring/health-check alerting, and the final README + architecture diagram + honest "decisions and tradeoffs" writeup — including the Terraform gap named plainly, not hidden.
 
-## Known Gotchas / Things That Tripped Us Up (don't repeat)
+## Known Gotchas
 
-- NuGet defaults to latest major package version even on a .NET 8 project — always pin explicitly (`8.0.*` for EF Core/ASP.NET packages; other packages need their own known-good version checked, e.g. `RabbitMQ.Client` pinned to `6.8.1` in Step 20 to avoid the newer major version's breaking API changes). This is a general rule, not specific to one package.
-- Docker Compose port mapping is `hostPort:containerPort` — container-side must stay `5432` for Postgres regardless of what host port you choose.
-- Run `docker compose` commands from the `infra/` folder, or pass the full path to the compose file.
-- **CORS + `UseHttpsRedirection()`**: any local dev setup with frontend and API on different ports needs explicit CORS configuration — the browser blocks cross-origin requests by default. `UseHttpsRedirection()` will also break plain-http frontend calls if left in for local dev.
-- **JWT claim remapping**: ASP.NET Core's JWT Bearer middleware silently renames claim types like `sub` by default. Set `options.MapInboundClaims = false` explicitly if you need to read standard JWT claim names as-issued — don't work around it with manual token re-parsing.
-- **AI-assisted dev failure mode observed directly**: when Copilot hits an error, it tends to patch the symptom locally (add a fallback, catch and retry) rather than diagnose the root cause. Worth deliberately reviewing AI-written code for this pattern, not just checking that it compiles/runs.
-- **NuGet version drift isn't limited to EF Core.** `Microsoft.Extensions.Http`/`System.Net.Http.Json` were found pinned to `10.0.10` (a .NET 10 version) inside a `net8.0` project — same root cause as every prior pinning gotcha (an unpinned `dotnet add package` grabbing "latest"). Check *all* package versions against the target framework when reviewing a `.csproj`, not just the packages that happened to cause visible errors before.
-- **`ssh.exe` on Windows produced zero output through every invocation method tried** in this environment (`Desktop Commander:start_process`, `Start-Process` with redirected streams, piping to a file) — even basic flags like `-V` or `BatchMode=yes` (which should force fast, loud failure) produced nothing, no error, no timeout message. Basic non-SSH command redirection worked fine in the same environment, isolating the issue to `ssh.exe` specifically — likely related to it expecting a real console/PTY that this environment's process spawning doesn't provide. **No fix found; worked around, not solved**: fell back to guided manual execution — Claude writes exact commands, the user runs them in their own real terminal, pastes results back for verification at each step. If a future session has working SSH access, this workaround may no longer be necessary — worth testing directly before assuming it's still needed.
-- **Read existing operational documentation before touching shared infrastructure.** The co-hosted project's own ops runbook (`docs/29_vps_production_operations_runbook.md`) revealed a pre-existing wildcard DNS record, wildcard TLS cert, and the fact that its nginx runs inside Docker — each of these materially changed the deployment plan, and each was verified live rather than trusted blindly from the doc alone (e.g., the wildcard cert was confirmed via `openssl x509`, not assumed from the runbook's prose).
-- **Scope credentials to the minimum needed, every time — even for "just pulling an image."** The first GitHub PAT generated for VPS image pulls defaulted to `repo` (full read/write on all repositories) and `write:packages`. Caught before use; corrected to `read:packages` only, with an explicit expiration set. A credential living indefinitely on a remote server should never carry more access than its actual job requires.
-- **When integrating with a live server hosting an unrelated project, look for a way to be purely additive before assuming you need to edit shared config.** Originally planned to edit the co-hosted project's `docker-compose.yml` to add a shared network — turned out unnecessary once the network's actual (non-default) name was discovered via `docker network ls`: an `external: true` network reference in *this* project's own compose file was sufficient. Zero lines changed in the other project's files.
-- **Always use `import type { }` for TypeScript interfaces/types**, never plain `import { }`. Vite's dev-mode transform (esbuild) processes files individually and doesn't always reliably elide type-only imports, causing a runtime `SyntaxError` for something that's actually just a compile-time construct.
-- **Extracting a shared library: move files, don't copy them.** Copying models into `JobCopilot.Contracts` while leaving the originals in place created an orphaned duplicate that compiled silently (C# allows identical class names in different namespaces) — only caught by deliberately reading the file tree, not by trusting a successful build.
-- **AI model version strings go stale fast.** `gemini-1.5-flash` was already fully shut down (404) by the time it was used — always verify current model availability via live search rather than assuming prior knowledge is current, especially for fast-moving AI provider APIs.
-- **`Start-Process -NoNewWindow` requires an attached console.** Fails silently (returns `$null`) when a script is launched headlessly/programmatically. Use `-RedirectStandardOutput`/`-RedirectStandardError` to log files instead for scripts that might run outside an interactive terminal.
-- **A build succeeding or a service starting is not proof a feature works.** Only exercising the actual behavior (a real request, a real response) counts as verification — a self-generated report claiming "complete" with an unperformed "how to verify" checklist is a pattern worth recognizing and distrusting.
-- **Don't mistake test timing for a bug.** Polling too soon after triggering an async AI call can show a stale intermediate state (`Processing`) that looks alarming but is just normal latency — re-check before concluding something's broken.
-- **A build succeeding in dev mode is not proof it will succeed in production.** `npm run dev` (esbuild, lenient) can mask errors that `npm run build` (`tsc -b`, strict) catches — run the real production build at least once before assuming the frontend is deployment-ready.
-- **EF Core migrations assume the `DbContext` and its migrations live in the same assembly by default.** The moment they're split across projects (as happened when `AppDbContext` moved into `JobCopilot.Contracts`), migrations silently stop being discovered unless `.MigrationsAssembly("...")` is explicitly configured. Verify with `dotnet ef migrations list` against a genuinely fresh database, not an already-populated one — an existing database can mask this bug indefinitely.
-- **Don't trust that an AI coding tool's safety heuristics only affect its display output.** Copilot CLI's secret-redaction logic corrupted an actual file it wrote (not just its terminal echo) by masking a harmless placeholder password. Verify security-adjacent file content (connection strings, credentials, anything password-shaped) byte-for-byte after any AI tool writes it — "the write succeeded" is not the same as "the content is correct."
-- **`depends_on: condition: service_healthy` in Docker Compose is necessary but not always sufficient.** A healthcheck can report "healthy" slightly before the actual service is ready for new connections (RabbitMQ's AMQP listener vs. its Erlang-node healthcheck, here) — don't rely on compose-level health gating alone for genuinely critical startup dependencies; add retry logic in the app itself too.
-- **A "test" stage in CI is meaningless if there are no real tests to run.** `dotnet test` against a solution with zero test projects succeeds trivially, giving false confidence — worth adding genuine tests before wiring up CI's test stage, not after.
-- **Claude's own specs can be wrong too, not just Copilot's implementations.** A stale namespace reference (`Models.User` instead of the post-refactor `JobCopilot.Contracts.User`) was written directly into a prompt file by Claude — caught the same way everything else is caught: by actually building it, not by trusting the source.
-- **Copilot CLI with only `write` tool permission may not reliably create new nested directories.** It hung indefinitely attempting several approaches when asked to create files in `.github/workflows/` and a new test project folder that didn't exist yet. Pre-create parent directories manually before invoking Copilot CLI for file-creation tasks in genuinely new folders.
-- **NuGet version drift isn't limited to EF Core.** `Microsoft.Extensions.Http`/`System.Net.Http.Json` were found pinned to `10.0.10` (a .NET 10 version) inside a `net8.0` project — same root cause as every prior pinning gotcha (an unpinned `dotnet add package` grabbing "latest"). Check *all* package versions against the target framework when reviewing a `.csproj`, not just the packages that happened to cause visible errors before.
+> **Moved to `AGENTS.md`** at the repo root — general engineering lessons that apply regardless of which step you're on now live there, auto-read by Claude Code and similar tools.
 
 ## Future Additions (deliberately deferred, don't lose track)
 
@@ -208,12 +340,4 @@ TLS is already covered (existing wildcard cert) — nothing to do there. Remaini
 - ~~RabbitMQ connection retry-with-backoff~~ — **done, Step 31, live-tested against a real outage.**
 - ~~EF Core / package version drift~~ — **done, Step 31.**
 
-## User Context (for tone/pacing calibration)
-
-- Experienced backend dev (ASP.NET/C# since 2010), rusty on modern frontend/cloud-native/DevOps, not a beginner — skip beginner analogies, use direct technical language.
-- Prefers terse "what & why" recaps after each step. **From Step 21 onward: prefers compact, bullet-style chat responses generally**, not just recaps.
-- Background: IIS deployment experience only — the "deployment has evolved" explainer (IIS vs. containers/orchestration/CI-CD) was delivered at the Step 22→23 boundary. **Delivered, not owed anymore.**
-- **From Step 20 onward: uses GitHub Copilot CLI (`copilot` command) invoked directly by Claude via shell access**, not VS Code Copilot chat. Claude writes the spec, invokes `copilot -p "..." --model claude-haiku-4.5` with scoped `--allow-tool` permissions, then verifies by reading the actual files. Batch related file-creation tasks into one Copilot CLI call where possible (explicit user preference — token/request efficiency) rather than one call per file. Avoid inlining large/quote-heavy prompts directly in the shell command (causes argument-escaping corruption) — write the spec to a file and point Copilot at it instead, or keep inline prompts short and quote-free.
-- Working step-by-step, confirms each step before moving to the next.
-- **From Step 16 onward: writes code via GitHub Copilot directly in the repo**, not chat-pasted. Claude verifies by reading actual files (has direct filesystem access via Desktop Commander/Filesystem MCP tools), not by trusting chat summaries alone.
-- Maintains `docs/ARCHITECTURE_CONCEPTS.md` in parallel — every step (going forward, including retroactively for 1–16) gets an entry there: Architectural Viewpoint & Arguments, Plain-Language Definitions, File Mapping. Claude writes this proactively without being asked each time.
+> **Workflow preferences, tooling gotchas, and standing rules** (response style, Copilot CLI usage pattern, verification discipline, VPS/shared-infrastructure caution) **now live in `AGENTS.md`** at the repo root.
