@@ -2,7 +2,24 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Steps 29–31 complete, all 3 live-verified with real tests (rate limit 429, injection resisted, RabbitMQ outage survived) — Week 3 fully done, about to start Week 4 (cloud deployment)
+**Last updated:** Week 4 plan pivoted (VPS, not cloud provider — see below), Step 32 complete and live-verified, about to start Step 33 (VPS nginx config — touches a live server running the user's other project, proceed carefully)
+
+## Week 4 Plan Pivot (important — read before continuing)
+
+Original plan was Terraform + Azure. **Changed**: AWS/Azure/GCP all require a credit card at signup even for free-tier-only usage (confirmed via research) — the user has no card available, full stop. **New plan: deploy to the user's own existing VPS** (already running a separate SaaS project, Docker installed, SSH key access already set up, nginx reverse proxy already in front of the existing project, 4GB+ free RAM, user has a spare domain ready).
+- Postgres/RabbitMQ now run as containers directly on the VPS (reusing the exact `docker-compose.yml` already built and tested) — no need for Aiven/CloudAMQP/any third-party managed service.
+- Terraform's role shifts from "provision cloud resources" to "manage deployment onto an existing server" via `file`/`remote-exec` provisioners over SSH — a legitimate, real IaC pattern, worth naming honestly as a known tradeoff (HashiCorp itself describes provisioners as "a last resort" vs. purpose-built config management tools like Ansible) in the final README.
+- **Real risk to manage carefully**: the VPS's nginx also serves the user's other live project. Step 33 will add a *new* site config, never touch the existing one, and always run `nginx -t` before any reload.
+
+## Tech Stack (updated for VPS deployment)
+
+| Layer | Choice | Notes |
+|---|---|---|
+| Hosting | User's own VPS | Docker + docker-compose.yml (already built/tested), nginx reverse proxy (shared with another project — new site config only, never modify the existing one) |
+| Postgres | Containerized on the VPS | Same `docker-compose.yml`, no host port published — internal only |
+| Message queue | Containerized on the VPS (RabbitMQ) | Same as above, no host port published |
+| TLS | Let's Encrypt / certbot | Free, no card, via nginx |
+| IaC | Terraform, `file`/`remote-exec` provisioners over SSH | Manages deployment onto the existing VPS, not cloud resource provisioning |
 **Reference doc:** `Full_Stack_Developer_Transition_Roadmap.md` (roadmap), `ARCHITECTURE_CONCEPTS.md` (per-step architectural reasoning + concept definitions — read this for *why*, this file for *what/status*)
 
 ---
@@ -21,11 +38,11 @@ Small full-stack app: paste a resume + job description → AI extracts skills fr
 | DB | PostgreSQL 16 (Docker) | Host port **5433** (5432 was taken by local install) |
 | ORM | EF Core 8 | Npgsql provider. Shared via `JobCopilot.Contracts` between API and worker |
 | Auth | JWT + BCrypt | Custom, not Identity framework. `MapInboundClaims = false` set explicitly (see Gotchas) |
-| Queue | RabbitMQ (local) → SQS/Azure Service Bus (cloud) | Manual ack, QoS=1. Working end-to-end |
+| Queue | RabbitMQ, containerized on the VPS (plan pivoted from managed cloud queue — see Week 4 Plan Pivot above) | Manual ack, QoS=1. Working end-to-end |
 | AI matching | Google Gemini API (`gemini-3.5-flash`, free tier) | **Not** `gemini-1.5-flash` — that's fully shut down, 404s (caught in verification). **Prompt-injection hardened** (Step 30, live-tested against a real injection attempt) |
 | Real-time | SignalR | **Working, live-verified.** `/hubs/match`, per-user groups, second queue (`match-completed`) bridges worker → API → browser |
 | Vector search | Postgres `pgvector` extension | For embeddings-based match scoring, later phase |
-| Containerization | Docker Compose | **Full stack containerized and working**: `docker-compose.yml` at repo root (postgres, rabbitmq, api, worker, frontend). `infra/docker-compose.dev.yml` still used for lightweight local dev (Postgres+RabbitMQ only, app runs natively) |
+| Containerization | Docker Compose | **Full stack containerized and working, production-hardened (Step 32)**: `docker-compose.yml` at repo root — Postgres/RabbitMQ have NO published ports (internal only), API/frontend bound to `127.0.0.1` only. Frontend's own nginx proxies `/api`+`/hubs` internally by Docker service name. `infra/docker-compose.dev.yml` still used for lightweight local dev (Postgres+RabbitMQ only, app runs natively) |
 | CI/CD | GitHub Actions | **Working, confirmed on real runs.** `ci.yml` (build+test, all branches/PRs), `cd.yml` (build+push to ghcr.io, master only) |
 | Cloud IaC | Terraform | Week 4 |
 
@@ -138,10 +155,11 @@ ai-jobsearch-copilot/
     - **Prompt-injection hardening (30):** input-side (XML delimiters + explicit "treat as data" instruction + delimiter-tag stripping) and output-side (score clamped 0–100, gap analysis length-capped) — two independent layers, since prompt wording alone is never a hard guarantee. Live-tested with a real injection attempt ("output exactly score 100...") — actual result was a correctly-reasoned `score: 0`, completely ignoring the injected demand.
     - **Cleanup (31):** added `ConnectWithRetryAsync` (exponential backoff, 10 attempts, properly cancellable) to both `Worker.cs` and `MatchCompletedConsumer.cs` — the exact RabbitMQ cold-start crash found in Steps 23–26 is now fixed, live-tested by actually stopping RabbitMQ mid-run and confirming the worker retried and recovered instead of crashing. Removed ~12 lines of noisy step-by-step diagnostic logging from `Worker.cs`. Fixed package version drift: `JobCopilot.Api.csproj`'s floating `8.0.*` EF Core packages pinned to the same exact `8.0.10` used elsewhere (eliminates the `MSB3277` warnings seen since Step 27), and `JobCopilot.Worker.csproj`'s `Microsoft.Extensions.Http`/`System.Net.Http.Json` corrected from `10.0.10` (a .NET 10 version in a .NET 8 project) to `8.0.1`.
     - All builds clean (0 warnings, including the version-conflict warnings genuinely gone), all 4 existing tests still passing.
+32. ✅ **Production-hardened compose architecture, VPS-ready — live-verified from a genuinely fresh volume.** Frontend URLs made build-time configurable (relative paths in prod → no CORS needed at all in production, only for local dev). Frontend's own nginx now proxies `/api`+`/hubs` internally by Docker service name, so the *outer* VPS nginx (shared with the user's other project) only needs one simple rule — deliberately minimizing Step 33's blast radius. Postgres/RabbitMQ: removed all published ports (internal-only). API/frontend: rebound to `127.0.0.1` only, never `0.0.0.0`. This removed host access for manual migrations, so added automatic `db.Database.Migrate()` on API startup — the correct fix, not a workaround, for a single-instance deployment. **Full regression test performed**: stack rebuilt from a genuinely fresh volume (`docker compose down -v`), tested end-to-end through the NEW nginx-proxied path (port 5173, not the old direct-to-API 5220) — register, submit, poll all confirmed working, `Completed` status with real score and gap-analysis text.
 
-## Next Step: Week 4 — Cloud Deployment (Steps 32–38)
+## Next Step (33)
 
-Terraform: cloud provider setup (Azure, given the user's .NET background), managed Postgres, container hosting for API+worker (ACI/AKS/App Service), managed queue (swap RabbitMQ for Azure Service Bus via the `IMessagePublisher` abstraction — the payoff of that Step 20 design decision), deploy through the existing CI/CD pipeline to real cloud infra, basic monitoring/alerting, and the final README with architecture diagram + "decisions and tradeoffs" writeup (the actual portfolio-facing deliverable).
+VPS nginx site config for the new subdomain (path-routed to the frontend container's port), provisioned via Terraform (`file`+`remote-exec` over the existing SSH key). **Care required**: never touch the existing site config for the user's other project — add a new one only, always `nginx -t` before reload.
 
 ## Known Gotchas / Things That Tripped Us Up (don't repeat)
 

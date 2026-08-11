@@ -685,3 +685,48 @@ The first invocation for this step hung indefinitely trying to create files insi
 - Modified: `worker/JobCopilot.Worker/JobCopilot.Worker.csproj` — `Microsoft.Extensions.Http`/`System.Net.Http.Json` corrected from `10.0.10` to `8.0.1`
 
 **Verified, not just written:** all three projects (API, worker, test project) build clean with zero warnings (version-conflict warnings genuinely gone, confirmed by rebuilding after the pin fix, not assumed). All 4 existing tests still pass. **Three separate live behavioral tests performed, not just code review:** (1) rate limiting — 5 successful auth requests followed by a real `429` on the 6th, confirmed via actual HTTP responses; (2) prompt injection — a real injection attempt submitted end-to-end through the full pipeline, resulting in a correctly-reasoned `score: 0` rather than the injected demand of `100`; (3) retry-with-backoff — RabbitMQ container actually stopped mid-test, worker confirmed logging retry attempts with growing backoff instead of crashing, then confirmed recovering cleanly ("Worker started and listening") once RabbitMQ was restarted, with no manual intervention needed.
+
+
+---
+
+## Step 32: Production-Ready Compose Architecture (VPS Prep)
+
+> **Context shift:** the original Week 4 plan assumed a major cloud provider (Azure, per the user's .NET background). All three major clouds (AWS/Azure/GCP) require a credit card at signup even for free-tier-only usage — confirmed via research, not assumed. Given a hard "no card available" constraint, the plan pivoted to deploying on the user's own existing VPS (already running a separate SaaS project, with Docker and SSH access already set up) instead. This is arguably a *better* portfolio story: it demonstrates understanding of self-managed infrastructure and reverse-proxy configuration, not just "click deploy" on a managed platform.
+
+### Architectural Viewpoint & Arguments
+
+The frontend's API/SignalR URLs became **build-time configurable** (`VITE_API_URL`, `VITE_HUB_URL`), defaulting to relative paths (`/api`, `/hubs/match`) in the Docker build, while local (non-Docker) dev keeps the old absolute `localhost:5220` default.
+
+- **Why relative paths specifically, not just "configurable":** with nginx serving the frontend AND proxying `/api`/`/hubs` to the API container on the same origin, the browser never makes a cross-origin request at all in production — eliminating the need for CORS entirely in that path (CORS remains necessary only for local dev, where the Vite dev server and the API run on genuinely different origins). This is a meaningful simplification, not just an aesthetic preference: fewer moving parts means fewer places for a subtle security misconfiguration to hide.
+
+The frontend container's own `nginx.conf` now proxies `/api/` and `/hubs/` to the API container **internally**, by Docker Compose service name (`http://api:8080`), rather than requiring the *outer* reverse proxy (the VPS's own nginx, serving the user's other project too) to know about these paths.
+
+- **Why push this logic into the frontend container rather than the VPS's nginx:** it makes the frontend container fully self-contained — the exact same image works correctly whether it's run via local `docker compose up`, on the VPS, or hypothetically anywhere else, because all the "which container serves which path" logic lives inside the Docker Compose network, addressed by service name. The VPS's outer nginx then only needs one simple rule: proxy the whole subdomain to the frontend container's port. This significantly reduces the blast radius of Step 33 (editing the VPS's live nginx config, which also serves the user's other project) — a simpler outer config is a safer outer config.
+
+**Postgres and RabbitMQ no longer publish any host ports at all**; API and frontend are now bound to `127.0.0.1` only, never `0.0.0.0`.
+
+- **Why this matters concretely, not just as a best practice:** Postgres/RabbitMQ only need to be reachable by the API/worker containers, over the internal Compose network — there's no legitimate reason for them to be reachable from the host at all, let alone the public internet. Binding API/frontend to loopback-only means even if the VPS's firewall were ever misconfigured, these ports still couldn't be reached from outside the machine — the reverse proxy is the only sanctioned path in. This is defense in depth: two independent things (the firewall AND the port binding) would both have to fail for direct external access to become possible.
+
+Migrations now apply **automatically on API startup** (`db.Database.Migrate()`), rather than requiring a manual `dotnet ef database update` step.
+
+- **Why this became necessary, not just convenient:** removing Postgres's host port (above) means there's no longer a way to run migration commands from the host machine against a fresh container — the database simply isn't reachable from outside the Compose network anymore. Auto-migration is the standard, correct pattern for a single-instance deployment (the well-known caveat — multiple instances racing to apply the same migration concurrently — doesn't apply here, since this project runs exactly one API instance). A genuinely fresh VPS deployment (empty database, first ever start) now works with zero manual steps, which matters a great deal for the CD pipeline (Step 35) actually being able to redeploy unattended.
+
+### A real, live-verified regression check, not just a design description
+
+After all these changes, the entire local Docker Compose stack was rebuilt from a **genuinely fresh volume** (`docker compose down -v`) and re-tested end-to-end **through the new nginx-proxied path** (`localhost:5173/api/...`, not the old direct `localhost:5220/api/...`) — register, submit an application, poll for completion. Result: `Completed`, score 98, coherent gap analysis — confirming auto-migration, the internal nginx proxy, and the loopback-only port bindings all work together correctly, not just individually.
+
+### Plain-Language Definitions
+
+- **Same-origin vs. cross-origin:** a browser request is "same-origin" when the protocol, domain, and port all match the page that made it; anything else is "cross-origin," and triggers CORS rules. Proxying `/api` through the same nginx that serves the frontend means the browser only ever sees one origin — CORS becomes irrelevant for that traffic, not just permitted.
+- **Loopback-only binding (`127.0.0.1:X:Y` vs. `X:Y` in Docker Compose):** by default, Docker publishes a port to `0.0.0.0`, meaning any network interface on the host — including ones reachable from the public internet, depending on firewall rules. Prefixing with `127.0.0.1` restricts the binding to the host's own loopback interface only — reachable from processes running on that same machine (like the VPS's own nginx), but never from outside it, regardless of firewall configuration.
+- **Auto-migration on startup:** running pending EF Core migrations as part of the application's own startup sequence, rather than as a separate manual or CI/CD-pipeline step. Appropriate for single-instance deployments; riskier at multi-instance scale, where two instances starting simultaneously could race to apply the same migration.
+
+### File Mapping
+
+- Modified: `frontend/src/api/client.ts`, `signalr.ts` — build-time-configurable URLs via `import.meta.env`, defaulting to relative paths
+- Modified: `frontend/Dockerfile` — `ARG`/`ENV` for `VITE_API_URL`/`VITE_HUB_URL`, defaulting to `/api` and `/hubs/match`
+- Modified: `frontend/nginx.conf` — added `/api/` and `/hubs/` proxy blocks (the latter with WebSocket upgrade headers for SignalR), pointing at the `api` service internally
+- Modified: `docker-compose.yml` — removed all published ports for `postgres`/`rabbitmq`; `api`/`frontend` ports rebound to `127.0.0.1` only
+- Modified: `api/JobCopilot.Api/Program.cs` — added automatic `db.Database.Migrate()` on startup
+
+**Verified, not just built:** full stack rebuilt from a genuinely fresh volume, tested end-to-end through the new nginx-proxied path (not the old direct-API path) — register, submit, poll for completion all confirmed working. `Completed` status, real score, real gap-analysis text.

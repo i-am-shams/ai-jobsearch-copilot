@@ -91,6 +91,20 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 
+// Apply pending migrations automatically on startup. Without host network
+// access to Postgres (deliberately removed - see docker-compose.yml), there's
+// no separate manual "dotnet ef database update" step available against a
+// fresh container, and no separate migration step exists in the CD pipeline
+// yet either. Auto-migrating is the standard, appropriate pattern for a
+// single-instance deployment; the known caveat (multiple instances racing to
+// apply the same migration concurrently) doesn't apply here since this
+// project runs exactly one API instance.
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    db.Database.Migrate();
+}
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {

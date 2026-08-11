@@ -5,8 +5,10 @@ services:
       POSTGRES_USER: jobcopilot
       POSTGRES_PASSWORD: devpassword
       POSTGRES_DB: jobcopilot
-    ports:
-      - "5433:5432"
+    # No published ports: only the api/worker containers need to reach this,
+    # over the internal Docker Compose network by service name ("postgres").
+    # Publishing to the host would needlessly expose the database beyond
+    # what's actually required - a real hardening step, not just tidiness.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -17,9 +19,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3-management
-    ports:
-      - "5672:5672"
-      - "15672:15672"
+    # Same reasoning as postgres above - no published ports.
     environment:
       RABBITMQ_DEFAULT_USER: jobcopilot
       RABBITMQ_DEFAULT_PASS: devpassword
@@ -34,7 +34,12 @@ services:
       context: .
       dockerfile: api/JobCopilot.Api/Dockerfile
     ports:
-      - "5220:8080"
+      # Loopback-only: the frontend container reaches this internally via
+      # the "api" service name, and on a VPS the host's own reverse proxy
+      # reaches it via 127.0.0.1. Never bound to 0.0.0.0 - there's no
+      # legitimate reason for this port to be reachable from outside the
+      # host at all, bypassing TLS/the reverse proxy entirely.
+      - "127.0.0.1:5220:8080"
     environment:
       ConnectionStrings__Default: "Host=postgres;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=devpassword"
       RabbitMq__Host: rabbitmq
@@ -73,7 +78,8 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     ports:
-      - "5173:80"
+      # Loopback-only, same reasoning as api above.
+      - "127.0.0.1:5173:80"
     depends_on:
       - api
 
