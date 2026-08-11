@@ -25,43 +25,59 @@ public class MatchCompletedConsumer : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try
+        var factory = new ConnectionFactory
         {
-            var factory = new ConnectionFactory
-            {
-                HostName = _config["RabbitMq:Host"] ?? "localhost",
-                Port = int.Parse(_config["RabbitMq:Port"] ?? "5672"),
-                UserName = _config["RabbitMq:Username"] ?? "jobcopilot",
-                Password = _config["RabbitMq:Password"] ?? "devpassword"
-            };
-            _connection = factory.CreateConnection();
-            _channel = _connection.CreateModel();
-            _channel.QueueDeclare("match-completed", durable: true, exclusive: false, autoDelete: false);
+            HostName = _config["RabbitMq:Host"] ?? "localhost",
+            Port = int.Parse(_config["RabbitMq:Port"] ?? "5672"),
+            UserName = _config["RabbitMq:Username"] ?? "jobcopilot",
+            Password = _config["RabbitMq:Password"] ?? "devpassword"
+        };
 
-            var consumer = new EventingBasicConsumer(_channel);
-            consumer.Received += async (_, ea) =>
-            {
-                try
-                {
-                    var json = Encoding.UTF8.GetString(ea.Body.ToArray());
-                    var evt = JsonSerializer.Deserialize<MatchCompletedEvent>(json)!;
-                    await NotifyUser(evt);
-                    _channel.BasicAck(ea.DeliveryTag, multiple: false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error processing MatchCompletedEvent");
-                }
-            };
-            _channel.BasicConsume("match-completed", autoAck: false, consumer);
-            _logger.LogInformation("MatchCompletedConsumer started and listening");
-            
-            await Task.Delay(Timeout.Infinite, stoppingToken);
-        }
-        catch (Exception ex)
+        // Retry with backoff: same cold-start resilience as Worker.cs's connection
+        // logic - see that file for the full rationale.
+        _connection = await ConnectWithRetryAsync(factory, stoppingToken);
+        _channel = _connection.CreateModel();
+        _channel.QueueDeclare("match-completed", durable: true, exclusive: false, autoDelete: false);
+
+        var consumer = new EventingBasicConsumer(_channel);
+        consumer.Received += async (_, ea) =>
         {
-            _logger.LogError(ex, "Critical error in MatchCompletedConsumer");
-            throw;
+            try
+            {
+                var json = Encoding.UTF8.GetString(ea.Body.ToArray());
+                var evt = JsonSerializer.Deserialize<MatchCompletedEvent>(json)!;
+                await NotifyUser(evt);
+                _channel.BasicAck(ea.DeliveryTag, multiple: false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing MatchCompletedEvent");
+            }
+        };
+        _channel.BasicConsume("match-completed", autoAck: false, consumer);
+        _logger.LogInformation("MatchCompletedConsumer started and listening");
+
+        await Task.Delay(Timeout.Infinite, stoppingToken);
+    }
+
+    private async Task<IConnection> ConnectWithRetryAsync(
+        ConnectionFactory factory, CancellationToken stoppingToken, int maxAttempts = 10)
+    {
+        var delay = TimeSpan.FromSeconds(2);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return factory.CreateConnection();
+            }
+            catch (Exception ex) when (attempt < maxAttempts)
+            {
+                _logger.LogWarning(
+                    "RabbitMQ connection attempt {Attempt}/{Max} failed: {Message}. Retrying in {Delay}s...",
+                    attempt, maxAttempts, ex.Message, delay.TotalSeconds);
+                await Task.Delay(delay, stoppingToken);
+                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 30));
+            }
         }
     }
 

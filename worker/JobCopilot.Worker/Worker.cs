@@ -24,59 +24,65 @@ public class Worker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try
+        var factory = new ConnectionFactory
         {
-            _logger.LogInformation("ExecuteAsync: Starting worker setup");
-            
-            var factory = new ConnectionFactory
-            {
-                HostName = _config["RabbitMq:Host"] ?? "localhost",
-                Port = int.Parse(_config["RabbitMq:Port"] ?? "5672"),
-                UserName = _config["RabbitMq:Username"] ?? "jobcopilot",
-                Password = _config["RabbitMq:Password"] ?? "devpassword"
-            };
-            _logger.LogInformation("ExecuteAsync: Creating RabbitMQ connection");
-            _connection = factory.CreateConnection();
-            _logger.LogInformation("ExecuteAsync: Connection established");
-            
-            _channel = _connection.CreateModel();
-            _logger.LogInformation("ExecuteAsync: Channel created");
-            
-            _channel.QueueDeclare("match-requests", durable: true, exclusive: false, autoDelete: false);
-            _channel.QueueDeclare("match-completed", durable: true, exclusive: false, autoDelete: false);
-            _logger.LogInformation("ExecuteAsync: Queue declared");
-            
-            _channel.BasicQos(0, 1, false); // one message at a time
-            _logger.LogInformation("ExecuteAsync: QoS set");
+            HostName = _config["RabbitMq:Host"] ?? "localhost",
+            Port = int.Parse(_config["RabbitMq:Port"] ?? "5672"),
+            UserName = _config["RabbitMq:Username"] ?? "jobcopilot",
+            Password = _config["RabbitMq:Password"] ?? "devpassword"
+        };
 
-            var consumer = new EventingBasicConsumer(_channel);
-            consumer.Received += async (_, ea) =>
-            {
-                try
-                {
-                    var json = Encoding.UTF8.GetString(ea.Body.ToArray());
-                    var evt = JsonSerializer.Deserialize<MatchRequestedEvent>(json)!;
-                    await ProcessMatch(evt);
-                    _channel.BasicAck(ea.DeliveryTag, multiple: false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error processing message");
-                }
-            };
+        // Retry with backoff: on a cold start (e.g. docker compose up from scratch),
+        // RabbitMQ's healthcheck can report "healthy" slightly before its AMQP listener
+        // is actually ready to accept connections (see Steps 23-26 findings). Connecting
+        // eagerly with no retry meant a single failed attempt crashed the whole host.
+        _connection = await ConnectWithRetryAsync(factory, stoppingToken);
+        _channel = _connection.CreateModel();
 
-            _channel.BasicConsume("match-requests", autoAck: false, consumer);
-            _logger.LogInformation("Worker started and listening for match requests");
-            
-            // Keep the service running until cancellation is requested
-            _logger.LogInformation("ExecuteAsync: Waiting for stop signal");
-            await Task.Delay(Timeout.Infinite, stoppingToken);
-            _logger.LogInformation("ExecuteAsync: Received stop signal");
-        }
-        catch (Exception ex)
+        _channel.QueueDeclare("match-requests", durable: true, exclusive: false, autoDelete: false);
+        _channel.QueueDeclare("match-completed", durable: true, exclusive: false, autoDelete: false);
+        _channel.BasicQos(0, 1, false); // one message at a time
+
+        var consumer = new EventingBasicConsumer(_channel);
+        consumer.Received += async (_, ea) =>
         {
-            _logger.LogError(ex, "Critical error in ExecuteAsync");
-            throw;
+            try
+            {
+                var json = Encoding.UTF8.GetString(ea.Body.ToArray());
+                var evt = JsonSerializer.Deserialize<MatchRequestedEvent>(json)!;
+                await ProcessMatch(evt);
+                _channel.BasicAck(ea.DeliveryTag, multiple: false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing message");
+            }
+        };
+
+        _channel.BasicConsume("match-requests", autoAck: false, consumer);
+        _logger.LogInformation("Worker started and listening for match requests");
+
+        await Task.Delay(Timeout.Infinite, stoppingToken);
+    }
+
+    private async Task<IConnection> ConnectWithRetryAsync(
+        ConnectionFactory factory, CancellationToken stoppingToken, int maxAttempts = 10)
+    {
+        var delay = TimeSpan.FromSeconds(2);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return factory.CreateConnection();
+            }
+            catch (Exception ex) when (attempt < maxAttempts)
+            {
+                _logger.LogWarning(
+                    "RabbitMQ connection attempt {Attempt}/{Max} failed: {Message}. Retrying in {Delay}s...",
+                    attempt, maxAttempts, ex.Message, delay.TotalSeconds);
+                await Task.Delay(delay, stoppingToken);
+                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 30));
+            }
         }
     }
 

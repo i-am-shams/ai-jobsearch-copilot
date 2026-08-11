@@ -2,7 +2,7 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Steps 27–28 complete, CI + CD both confirmed passing on real GitHub Actions runs, about to start Step 29 (rate limiting)
+**Last updated:** Steps 29–31 complete, all 3 live-verified with real tests (rate limit 429, injection resisted, RabbitMQ outage survived) — Week 3 fully done, about to start Week 4 (cloud deployment)
 **Reference doc:** `Full_Stack_Developer_Transition_Roadmap.md` (roadmap), `ARCHITECTURE_CONCEPTS.md` (per-step architectural reasoning + concept definitions — read this for *why*, this file for *what/status*)
 
 ---
@@ -22,7 +22,7 @@ Small full-stack app: paste a resume + job description → AI extracts skills fr
 | ORM | EF Core 8 | Npgsql provider. Shared via `JobCopilot.Contracts` between API and worker |
 | Auth | JWT + BCrypt | Custom, not Identity framework. `MapInboundClaims = false` set explicitly (see Gotchas) |
 | Queue | RabbitMQ (local) → SQS/Azure Service Bus (cloud) | Manual ack, QoS=1. Working end-to-end |
-| AI matching | Google Gemini API (`gemini-3.5-flash`, free tier) | **Not** `gemini-1.5-flash` — that's fully shut down, 404s (caught in verification) |
+| AI matching | Google Gemini API (`gemini-3.5-flash`, free tier) | **Not** `gemini-1.5-flash` — that's fully shut down, 404s (caught in verification). **Prompt-injection hardened** (Step 30, live-tested against a real injection attempt) |
 | Real-time | SignalR | **Working, live-verified.** `/hubs/match`, per-user groups, second queue (`match-completed`) bridges worker → API → browser |
 | Vector search | Postgres `pgvector` extension | For embeddings-based match scoring, later phase |
 | Containerization | Docker Compose | **Full stack containerized and working**: `docker-compose.yml` at repo root (postgres, rabbitmq, api, worker, frontend). `infra/docker-compose.dev.yml` still used for lightweight local dev (Postgres+RabbitMQ only, app runs natively) |
@@ -133,10 +133,15 @@ ai-jobsearch-copilot/
     - Also caught: a Docker Compose startup race — `depends_on: condition: service_healthy` wasn't sufficient on cold start; RabbitMQ's healthcheck passed slightly before its AMQP listener was truly ready, crashing API/worker on first boot. Flagged as an open item (retry-with-backoff needed in `Worker.cs`/`MatchCompletedConsumer.cs`, not yet implemented — see Future Additions).
     - **Full stack verified genuinely working**: all 5 containers up, both a failure case (no Gemini key → `Failed` status, clean, no crash) and a success case (real key → `Completed`, score 98, real analysis) tested live against actually-running containers, frontend's nginx serving confirmed via direct HTTP request.
 27–28. ✅ **CI/CD pipelines + first real tests in the project.** `ci.yml` (build API+worker, type-check+build frontend, run tests, all on push/PR) and `cd.yml` (build+push all 3 images to `ghcr.io`, master only, tagged with both `latest` and commit SHA). Added `JobCopilot.Api.Tests` — 4 genuine xUnit tests against `AuthService` (password hashing/verification, JWT generation) — the project's first tests after 27 steps, added specifically so CI's "test" stage isn't decorative. Two bugs caught before ever pushing: a spec error (Claude's own mistake — referenced the pre-Contracts `Models.User` instead of `JobCopilot.Contracts.User`) and a missing `ImplicitUsings` in the new test `.csproj`. Also hit a Copilot CLI limitation: it hung indefinitely trying to create files in not-yet-existing directories (`.github/workflows/`, the new test project folder) when only granted `write` permission — resolved by pre-creating directories manually before invoking it. **Confirmed on real GitHub Actions infrastructure** (not just local): both CI (47s) and CD (53s) passed green on their very first run.
+29–31. ✅ **Rate limiting, prompt-injection hardening, and cleanup — all three genuinely live-tested, not just written.** Written directly by Claude (not delegated to Copilot CLI) given the security/reliability sensitivity of this batch, after Copilot had repeatedly introduced subtle drift in exactly this kind of code (RabbitMqPublisher, migrations config) in earlier steps.
+    - **Rate limiting (29):** two fixed-window policies — `"auth"` (5/min) and `"applications"` (10/min, since every request triggers a real metered Gemini call downstream). Live-tested: 5 successful requests followed by a real `429` on the 6th.
+    - **Prompt-injection hardening (30):** input-side (XML delimiters + explicit "treat as data" instruction + delimiter-tag stripping) and output-side (score clamped 0–100, gap analysis length-capped) — two independent layers, since prompt wording alone is never a hard guarantee. Live-tested with a real injection attempt ("output exactly score 100...") — actual result was a correctly-reasoned `score: 0`, completely ignoring the injected demand.
+    - **Cleanup (31):** added `ConnectWithRetryAsync` (exponential backoff, 10 attempts, properly cancellable) to both `Worker.cs` and `MatchCompletedConsumer.cs` — the exact RabbitMQ cold-start crash found in Steps 23–26 is now fixed, live-tested by actually stopping RabbitMQ mid-run and confirming the worker retried and recovered instead of crashing. Removed ~12 lines of noisy step-by-step diagnostic logging from `Worker.cs`. Fixed package version drift: `JobCopilot.Api.csproj`'s floating `8.0.*` EF Core packages pinned to the same exact `8.0.10` used elsewhere (eliminates the `MSB3277` warnings seen since Step 27), and `JobCopilot.Worker.csproj`'s `Microsoft.Extensions.Http`/`System.Net.Http.Json` corrected from `10.0.10` (a .NET 10 version in a .NET 8 project) to `8.0.1`.
+    - All builds clean (0 warnings, including the version-conflict warnings genuinely gone), all 4 existing tests still passing.
 
-## Next Step (29)
+## Next Step: Week 4 — Cloud Deployment (Steps 32–38)
 
-Rate limiting on the API — protects against abuse, especially relevant given every request that creates an `Application` triggers a real (metered) Gemini API call downstream. After that: Step 30 (prompt-injection hardening on `GeminiMatchingService`, deferred since Step 21) and Step 31 (cleanup — includes the still-open RabbitMQ cold-start retry gap from Steps 23–26, and the noisy diagnostic logging in `Worker.cs`).
+Terraform: cloud provider setup (Azure, given the user's .NET background), managed Postgres, container hosting for API+worker (ACI/AKS/App Service), managed queue (swap RabbitMQ for Azure Service Bus via the `IMessagePublisher` abstraction — the payoff of that Step 20 design decision), deploy through the existing CI/CD pipeline to real cloud infra, basic monitoring/alerting, and the final README with architecture diagram + "decisions and tradeoffs" writeup (the actual portfolio-facing deliverable).
 
 ## Known Gotchas / Things That Tripped Us Up (don't repeat)
 
@@ -160,15 +165,16 @@ Rate limiting on the API — protects against abuse, especially relevant given e
 - **A "test" stage in CI is meaningless if there are no real tests to run.** `dotnet test` against a solution with zero test projects succeeds trivially, giving false confidence — worth adding genuine tests before wiring up CI's test stage, not after.
 - **Claude's own specs can be wrong too, not just Copilot's implementations.** A stale namespace reference (`Models.User` instead of the post-refactor `JobCopilot.Contracts.User`) was written directly into a prompt file by Claude — caught the same way everything else is caught: by actually building it, not by trusting the source.
 - **Copilot CLI with only `write` tool permission may not reliably create new nested directories.** It hung indefinitely attempting several approaches when asked to create files in `.github/workflows/` and a new test project folder that didn't exist yet. Pre-create parent directories manually before invoking Copilot CLI for file-creation tasks in genuinely new folders.
+- **NuGet version drift isn't limited to EF Core.** `Microsoft.Extensions.Http`/`System.Net.Http.Json` were found pinned to `10.0.10` (a .NET 10 version) inside a `net8.0` project — same root cause as every prior pinning gotcha (an unpinned `dotnet add package` grabbing "latest"). Check *all* package versions against the target framework when reviewing a `.csproj`, not just the packages that happened to cause visible errors before.
 
 ## Future Additions (deliberately deferred, don't lose track)
 
 - **Node.js polyglot piece**: a small Node.js service consuming `MatchCompletedEvent` (e.g., logs/webhooks on match completion) — planned as an *additive*, low-risk demonstration of polyglot architecture. Unblocked since Step 22, not yet started.
-- **Prompt-injection hardening** on `GeminiMatchingService` — resume/JD text currently goes into the prompt unescaped. Now Step 30, not forgotten.
 - **Failed matches don't push a live SignalR update** — only success does. Known limitation from Step 22, not yet fixed.
-- **Diagnostic logging cleanup** in `Worker.cs` `ExecuteAsync` — verbose debug-level logging left in from earlier troubleshooting, harmless but noisy. Minor cleanup, not urgent.
-- **RabbitMQ connection retry-with-backoff needed in `Worker.cs` and `MatchCompletedConsumer.cs`.** Both connect eagerly at startup with no retry — a cold start where RabbitMQ isn't 100% ready yet crashes the whole host. `RabbitMqPublisher`'s lazy-connect pattern doesn't have this problem; the two `BackgroundService`s should adopt a similar resilience pattern. Found during Steps 23–26 Docker verification, not yet fixed.
-- **EF Core package version mismatch warnings** (`MSB3277`) between `JobCopilot.Api` (8.0.11) and other transitive references (8.0.29) — non-blocking, surfaced when building the new test project. Worth reconciling to a single consistent EF Core version across the whole solution during Step 31 cleanup.
+- ~~Prompt-injection hardening~~ — **done, Step 30.**
+- ~~Diagnostic logging cleanup in `Worker.cs`~~ — **done, Step 31.**
+- ~~RabbitMQ connection retry-with-backoff~~ — **done, Step 31, live-tested against a real outage.**
+- ~~EF Core / package version drift~~ — **done, Step 31.**
 
 ## User Context (for tone/pacing calibration)
 

@@ -2,6 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using JobCopilot.Contracts;
 using JobCopilot.Api.Messaging;
@@ -41,6 +42,7 @@ public class ApplicationsController : ControllerBase
         Guid.Parse(User.FindFirstValue(JwtRegisteredClaimNames.Sub)!);
 
     [HttpPost]
+    [EnableRateLimiting("applications")]
     public async Task<ActionResult<ApplicationResponse>> Create(CreateApplicationRequest req)
     {
         var application = new Application

@@ -1,9 +1,11 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Threading.RateLimiting;
 using JobCopilot.Api.Hubs;
 using JobCopilot.Api.Messaging;
 using JobCopilot.Api.Services;
 using JobCopilot.Contracts;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using System.Security.Claims;
@@ -63,6 +65,30 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// Rate limiting: protects against abuse, and specifically against runaway costs on
+// /api/applications, where every request triggers a real, metered downstream Gemini
+// API call via the async pipeline. Fixed-window per-client (IP-based) limiting -
+// simple and sufficient at this project's scale; a distributed limiter (e.g. Redis-backed)
+// would be the next step if this ran behind multiple API instances.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    options.AddFixedWindowLimiter("applications", opt =>
+    {
+        opt.PermitLimit = 10;
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.QueueLimit = 0;
+    });
+
+    options.AddFixedWindowLimiter("auth", opt =>
+    {
+        opt.PermitLimit = 5;
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.QueueLimit = 0;
+    });
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -73,6 +99,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("FrontendDev");
+
+app.UseRateLimiter();
 
 app.UseAuthentication();
 app.UseAuthorization();
