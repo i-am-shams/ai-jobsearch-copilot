@@ -1,4 +1,7 @@
+import { Fragment, useEffect, useRef, useState } from 'react';
 import type { ApplicationResponse } from '../types/application';
+import { StatusPill } from './StatusPill';
+import { AnimatedScore } from './AnimatedScore';
 
 interface Props {
   applications: ApplicationResponse[];
@@ -6,30 +9,107 @@ interface Props {
 }
 
 export function ApplicationList({ applications, loading }: Props) {
-  if (loading) return <p>Loading...</p>;
-  if (applications.length === 0) return <p>No applications tracked yet.</p>;
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [justCompleted, setJustCompleted] = useState<ReadonlySet<string>>(new Set());
+  const previousStatus = useRef(new Map<string, string>());
+
+  // Track which rows have *just* flipped to Completed, so the score can count
+  // up and the row can flash. Comparing against the previous render is what
+  // distinguishes "this result arrived live over SignalR" from "this row was
+  // already finished when the page loaded" - only the former should animate.
+  useEffect(() => {
+    const newlyCompleted = applications
+      .filter((app) => {
+        const previous = previousStatus.current.get(app.id);
+        return previous !== undefined && previous !== app.matchStatus && app.matchStatus === 'Completed';
+      })
+      .map((app) => app.id);
+
+    applications.forEach((app) => previousStatus.current.set(app.id, app.matchStatus));
+
+    if (newlyCompleted.length === 0) return;
+
+    setJustCompleted(new Set(newlyCompleted));
+    const timer = setTimeout(() => setJustCompleted(new Set()), 2500);
+    return () => clearTimeout(timer);
+  }, [applications]);
+
+  // Only show the loading placeholder on the very first load. Later refetches
+  // are triggered by live updates, and blanking the table on every push would
+  // make it flicker for no reason.
+  if (loading && applications.length === 0) {
+    return <p className="muted">Loading…</p>;
+  }
+
+  if (applications.length === 0) {
+    return <p className="muted">No applications tracked yet. Add one above to get a match score.</p>;
+  }
 
   return (
-    <table>
+    <table className="applications">
       <thead>
         <tr>
-          <th>Job Title</th>
-          <th>Company</th>
-          <th>Status</th>
-          <th>Score</th>
-          <th>Submitted</th>
+          <th scope="col">Job Title</th>
+          <th scope="col">Company</th>
+          <th scope="col">Status</th>
+          <th scope="col" className="numeric">Score</th>
+          <th scope="col">Submitted</th>
         </tr>
       </thead>
       <tbody>
-        {applications.map((app) => (
-          <tr key={app.id}>
-            <td>{app.jobTitle}</td>
-            <td>{app.companyName}</td>
-            <td>{app.matchStatus}</td>
-            <td>{app.matchScore ?? '—'}</td>
-            <td>{new Date(app.createdAt).toLocaleDateString()}</td>
-          </tr>
-        ))}
+        {applications.map((app) => {
+          const isExpanded = expandedId === app.id;
+          const hasAnalysis = Boolean(app.gapAnalysis);
+          const isFresh = justCompleted.has(app.id);
+
+          return (
+            <Fragment key={app.id}>
+              <tr className={isFresh ? 'row row--fresh' : 'row'}>
+                <td>
+                  {hasAnalysis ? (
+                    <button
+                      type="button"
+                      className="disclosure"
+                      aria-expanded={isExpanded}
+                      aria-controls={`analysis-${app.id}`}
+                      onClick={() => setExpandedId(isExpanded ? null : app.id)}
+                    >
+                      <span className="disclosure__marker" aria-hidden="true">
+                        {isExpanded ? '▾' : '▸'}
+                      </span>
+                      {app.jobTitle}
+                    </button>
+                  ) : (
+                    <span className="disclosure disclosure--empty">{app.jobTitle}</span>
+                  )}
+                </td>
+                <td>{app.companyName}</td>
+                <td>
+                  <StatusPill status={app.matchStatus} />
+                </td>
+                <td className="numeric">
+                  {app.matchScore === null ? (
+                    <span className="muted">—</span>
+                  ) : (
+                    <span className="score">
+                      <AnimatedScore value={app.matchScore} animate={isFresh} />
+                    </span>
+                  )}
+                </td>
+                <td>{new Date(app.createdAt).toLocaleDateString()}</td>
+              </tr>
+
+              {isExpanded && hasAnalysis && (
+                <tr id={`analysis-${app.id}`} className="analysis">
+                  <td colSpan={5}>
+                    <h4>Gap analysis</h4>
+                    <p>{app.gapAnalysis}</p>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          );
+        })}
       </tbody>
     </table>
   );

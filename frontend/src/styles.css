@@ -1,0 +1,164 @@
+/* Application styles. Kept separate from index.css, which is still Vite's
+   template stylesheet (it supplies the CSS custom properties used below).
+
+   Named styles.css rather than app.css deliberately: the repo previously had a
+   dead src/App.css, and on a case-insensitive filesystem those two names are
+   the same file - deleting one removed the other. */
+
+:root {
+  --status-queued: #6b6375;
+  --status-queued-bg: rgba(107, 99, 117, 0.12);
+  --status-active: #1c6fd6;
+  --status-active-bg: rgba(28, 111, 214, 0.12);
+  --status-done: #1f7a45;
+  --status-done-bg: rgba(31, 122, 69, 0.12);
+  --status-failed: #b3261e;
+  --status-failed-bg: rgba(179, 38, 30, 0.12);
+}
+
+.muted {
+  color: var(--text);
+  opacity: 0.7;
+}
+
+/* ---------- table ---------- */
+
+.applications {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.applications th,
+.applications td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.applications th {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  opacity: 0.75;
+}
+
+.applications .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.score {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+/* A brief highlight when a result arrives over SignalR, so the live update is
+   noticeable without being disruptive. */
+.row--fresh {
+  animation: row-fresh 2.4s ease-out;
+}
+
+@keyframes row-fresh {
+  0%   { background: var(--status-done-bg); }
+  100% { background: transparent; }
+}
+
+/* ---------- status pill ---------- */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.pill--pending    { color: var(--status-queued); background: var(--status-queued-bg); }
+.pill--processing { color: var(--status-active); background: var(--status-active-bg); }
+.pill--completed  { color: var(--status-done);   background: var(--status-done-bg); }
+.pill--failed     { color: var(--status-failed); background: var(--status-failed-bg); }
+
+.pill__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+/* ---------- expandable gap analysis ---------- */
+
+.disclosure {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--text-h);
+  cursor: pointer;
+  text-align: left;
+}
+
+.disclosure:hover {
+  color: var(--accent);
+}
+
+.disclosure:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.disclosure--empty {
+  cursor: default;
+  /* Keeps the title aligned with rows that do have a marker. */
+  padding-left: 18px;
+}
+
+.disclosure__marker {
+  font-size: 0.75em;
+  opacity: 0.6;
+}
+
+.analysis td {
+  background: var(--code-bg);
+  padding: 14px 18px 18px 42px;
+}
+
+.analysis h4 {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  opacity: 0.75;
+}
+
+.analysis p {
+  margin: 0;
+  max-width: 70ch;
+  line-height: 1.55;
+  color: var(--text-h);
+}
+
+/* Animation is emphasis, never information - everything above still reads
+   correctly with motion disabled. */
+@media (prefers-reduced-motion: reduce) {
+  .row--fresh,
+  .pill__dot {
+    animation: none;
+  }
+}
