@@ -2,7 +2,9 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Steps 34 + 35 complete — health checks (liveness/readiness split), container healthchecks, and **automated deploy on push to `master`, verified green end-to-end against the live VPS**. Remaining: external uptime monitor registration, then the final README + architecture diagram + tradeoffs writeup.
+**Last updated:** Steps 34–36 complete — health checks, **automated deploy on push to `master`** (verified green end-to-end), and the final README + architecture diagram + tradeoffs writeup. **Project 1's roadmap steps are done.** Now in a deliberate polish-and-publish interlude before Project 2: finish the frontend modernisation, audit for more bugs of the `gapAnalysis` class, sanitize docs and make the repo public, and refresh the portfolio site. See **"Next Step — an interlude before Project 2"** below.
+
+> ⚠️ **Uncommitted-to-remote work exists.** Commit `1dc0dad` (frontend gap-analysis rendering + live status) is committed locally but **deliberately not pushed** — pushing auto-deploys to production and the UI hasn't been confirmed in a browser yet. Verify, then push.
 
 ## 🚀 LIVE DEPLOYMENT
 
@@ -343,13 +345,45 @@ ai-jobsearch-copilot/
     - Diagram is Mermaid (renders natively on GitHub, diffable) **plus** a committed `docs/architecture.png` rendered via `@mermaid-js/mermaid-cli`, with `docs/architecture.mmd` as the extracted source. The PNG is *linked*, not embedded inline — GitHub renders the Mermaid block itself, so embedding both would show the diagram twice on the page.
     - Cleanup done: deleted `docs/STEP_21_VERIFICATION.md` (the self-generated file whose own "how to verify" section was an unperformed to-do list).
 
-## Next Step
+## Next Step — an interlude before Project 2
 
-**Project 1 is functionally complete.** One item outstanding, then it's finished:
+Project 1's roadmap steps are done, but a **polish-and-publish interlude was agreed before moving on**, prompted by an honest look at the frontend. Do these in order; the roadmap's Project 2 comes *after*.
 
-- **Register an external uptime monitor** against `https://jobcopilot.dentflowbd.com/health` (UptimeRobot — free, no card). Last outstanding piece of Step 34. **Match the response body keyword `Healthy`, not just a 200 status** — the frontend's SPA fallback returns 200 with `index.html` for any unmatched path, so a status-only monitor here is decorative (this exact false positive is documented in Step 35, bug 1).
+### A. Frontend: finish what's started, then modernise
 
-After that, the roadmap (`docs/Full_Stack_Developer_Transition_Roadmap.md`) moves on to **Project 2 — break a slice into microservices + cloud-native deploy**, and the interview-preparation track.
+**Committed locally but NOT pushed, and NOT yet verified in a browser** (commit `1dc0dad`). Pushing auto-deploys to production, so verify first, then push.
+- Renders `gapAnalysis` via expandable disclosure rows; status shown as a coloured pill (`Pending`→"Queued", `Processing`→"Analysing"); score counts up when a live SignalR result lands; deleted the never-imported Vite template `App.css`.
+- **To verify**: local stack up, log in as `demo@local.test` / `DemoTest123!` (seeded, has one completed application), expand a row, then submit a new one and watch the status transition live without refreshing.
+
+**Then the remaining modernisation**, in the priority order agreed:
+3. **TanStack Query** — replaces the current refetch-everything-on-any-event pattern with caching, background refresh, real loading/error states. The most recognisable "modern React" signal.
+4. **react-hook-form + zod** — real validation and shared schema types. Note `react-router-dom` is currently **installed but never imported** — either use it (below) or drop it.
+5. **Routing + a detail page** — `/`, `/applications/:id`, protected routes.
+6. **Vitest + React Testing Library** — currently **zero** frontend tests, so CI's frontend stage only type-checks and builds.
+7. **Error boundary, toasts, empty/error states, aria labels, keyboard navigation.** Currently 2 `catch` blocks and 2 `aria-` attributes in the whole app.
+
+### B. Hunt for more bugs of the same class
+
+The `gapAnalysis` bug — data generated, stored, returned by the API, and silently never rendered — was found by reading the code, not by any test or build. **Assume there are others.** Worth auditing specifically: every field on `ApplicationResponse` actually reaching the UI; error paths that swallow or misreport failures; the known "failed matches never push a SignalR update" gap; and whether anything else in the repo is dead or unused like `App.css` and `react-router-dom` were.
+
+### C. Make this repo public
+
+Decision taken: **sanitize the docs first, then publish** (no history rewrite).
+- **Git history is already clean of real secrets** — verified: no Gemini keys, no private keys, no tokens. Only `devpassword` and a self-labelled throwaway JWT key.
+- **What must be sanitized before publishing** — `docs/HANDOVER.md` and `docs/ARCHITECTURE_CONCEPTS.md` currently contain the **VPS IP, the SSH username (`deploy`), exact server paths, the Docker network name, the full nginx config, and the co-hosted <other-app> project's details**. The IP is DNS-discoverable from the live domain anyway, but the SSH username, directory layout and "this box also runs another production app" are not. Replace with placeholders; **keep every architectural lesson**, since the reasoning is the portfolio value.
+- Then `gh repo edit i-am-shams/ai-jobsearch-copilot --visibility public`, and pin it on the GitHub profile (pinning is a profile setting, done in the web UI).
+
+### D. Review and update the portfolio site
+
+`my-portfolio` — **already PUBLIC**, JavaScript, cloned locally at `C:\Users\Khalid\Documents\GitHub\my-portfolio`, last updated 2026-08-10. Review it and add/refresh the entry for this project: live URL, the architecture diagram, and a link to the (by then public) repo. Not yet examined at all — assess its current state first.
+
+### E. Still outstanding from Step 34
+
+- **Register an external uptime monitor** against `https://jobcopilot.dentflowbd.com/health` (UptimeRobot — free, no card). **Match the response body keyword `Healthy`, not just a 200 status** — the SPA fallback returns 200 with `index.html` for any unmatched path, so a status-only monitor is decorative (see Step 35, bug 1).
+
+### Then: Project 2
+
+`docs/Full_Stack_Developer_Transition_Roadmap.md` → **break a slice into microservices + cloud-native deploy**, plus the interview-preparation track.
 
 > **Tooling constraint for whoever picks this up:** in the current Claude Code environment, `ssh` is blocked by the harness permission classifier and `gh` is not installed, so VPS and GitHub-secret work is guided manual execution (Claude writes exact commands, user runs them, pastes results back) — same as Step 33, for a different underlying reason.
 
