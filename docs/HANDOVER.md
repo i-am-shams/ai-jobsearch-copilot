@@ -2,7 +2,7 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Step 34 code complete — health checks (liveness/readiness split) + container healthchecks, verified locally against real failure *and* recovery. Two manual follow-ups still open (VPS compose update, external uptime monitor). Next: Step 35 (auto-deploy on push) + final README/diagram/tradeoffs writeup.
+**Last updated:** Steps 34 + 35 complete — health checks (liveness/readiness split), container healthchecks, and **automated deploy on push to `master`, verified green end-to-end against the live VPS**. Remaining: external uptime monitor registration, then the final README + architecture diagram + tradeoffs writeup.
 
 ## 🚀 LIVE DEPLOYMENT
 
@@ -10,7 +10,8 @@
 
 - VPS deployment files live at `/opt/jobcopilot/docker-compose.yml` and `/opt/jobcopilot/.env` **on the VPS itself, not in this git repo** (environment-specific, contains real secrets)
 - New nginx site config: `/opt/<other-app>/nginx/conf.d/jobcopilot.conf` (new file, existing config for the other project untouched)
-- To redeploy manually right now (until Step 35 automates this): `ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose pull && docker compose up -d"`
+- **Deployment is automated (Step 35): pushing to `master` builds the three images and deploys them.** The manual fallback is still `ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose pull && docker compose up -d"`, but prefer re-running the CD workflow (`gh run rerun <id> --failed`) so the health gating and smoke test actually run.
+- **`/opt/jobcopilot/deploy.sh` on the VPS is the deployment entry point** and is the *only* thing the CD key may execute (forced command). Its source of truth lives in this repo at `deploy/deploy.sh` — **if you edit it there, it does not update on the VPS automatically**; re-upload it: `ssh <deploy-user>@144.79.132.100 'cat > /opt/jobcopilot/deploy.sh && chmod 750 /opt/jobcopilot/deploy.sh' < deploy/deploy.sh` (run from Git Bash — PowerShell has no `<` redirection).
 
 ## VPS Reference — full detail (so this isn't only reconstructable by SSHing in)
 
@@ -329,10 +330,18 @@ ai-jobsearch-copilot/
     - Also verified no regression: message consumption still works after the heartbeat loop replaced the worker's terminal `Task.Delay(Timeout.Infinite)`.
     - **Still outstanding for this step (both manual, not yet done):** update `/opt/jobcopilot/docker-compose.yml` on the VPS with the same healthchecks, and register `https://jobcopilot.dentflowbd.com/health` with an external uptime monitor (UptimeRobot — free, no card).
 
-## Next Step (35)
+35. ✅ **Automated deployment — pushes to `master` now deploy to the VPS, fully verified green end-to-end.** `cd.yml` gained a `deploy` job gated on all three image builds. The deploy key is **pinned by a forced command** (`restrict,command="/opt/jobcopilot/deploy.sh"`) in the VPS's `authorized_keys`, so a leaked GitHub secret cannot open a shell on the box that also runs the live <other-app> app — **verified by connecting with the key and asking for `whoami`, which ran the deploy script instead.** Host key pinned via `VPS_KNOWN_HOSTS` (cross-checked against the fingerprint this workstation already trusted) rather than disabling host key checking. `deploy.sh` pulls, applies, waits for every container to report healthy, smoke-tests the real public URL, and prunes dangling images.
+    - **Three real bugs, each found by verifying rather than trusting:**
+      1. **A smoke test that asserted nothing** — it checked only the HTTP status of `/health`, but the frontend's SPA `try_files` fallback returns `200` with `index.html` for *any* unmatched path. Proven against the live site *before* deploying: `/health` returned `200` with `<!doctype html>` on a deployment where the endpoint didn't exist. Now asserts the exact body (`Healthy`).
+      2. **The deploy key had an unintended passphrase** — `ssh-keygen -N '""'` in **PowerShell** produces a literal passphrase, not an empty one. CI failed with `Permission denied (publickey)`, which points at the secret, not the key. Diagnosed by testing the key locally; regenerated in Git Bash. Same PowerShell quoting hazard already in `AGENTS.md`, applied to key generation.
+      3. **A 502 on the first successful deploy** — a race, not a breakage: the VPS compose had no healthchecks yet, so the script had nothing to wait on and smoke-tested while the API was still applying EF migrations. Fixed at the cause by adding the Step 34 healthchecks to the VPS compose, not with a `sleep`.
+    - Added `.gitattributes` pinning `*.sh` to LF — with `core.autocrlf=true`, a committed `deploy.sh` would reach the VPS with CRLF and die on `bad interpreter: ...^M`. Verified 0 CR chars and a matching sha256 on the VPS.
+    - **Verified**: pipeline green (`deploy` in 24s), deploy log shows all 5 containers healthy then `liveness: Healthy` / `readiness: Healthy`; full app pipeline re-tested over the public domain (register → submit → `Completed`, score 70, real Gemini analysis); **co-hosted <other-app> confirmed unaffected** (`/health` → 200, 3-week uptime intact).
+    - **Known gap, named honestly**: deploys pull `:latest`, not the commit SHA, so rollback means editing the VPS compose by hand. SHA-pinning needs the forced command to accept a validated argument — listed as a Future Addition, not quietly skipped.
 
-TLS is already covered (existing wildcard cert) — nothing to do there. Remaining:
-- **Step 35 — auto-deploy**: extend `cd.yml` so pushes to `master` deploy to the VPS (currently manual: `ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose pull && docker compose up -d"`). **Decided approach**: dedicated SSH deploy key stored as a GitHub secret, hardened with a `command="..."` forced command in `authorized_keys` so the key can only run one deploy script and never a general shell — important because a live unrelated production app (<other-app>) shares this VPS.
+## Next Step
+
+- **Register an external uptime monitor** against `https://jobcopilot.dentflowbd.com/health` (UptimeRobot — free, no card). This is the last outstanding piece of Step 34. **Monitor the body, not just the status code** — the SPA fallback makes a 200 meaningless on its own (see Step 35, bug 1).
 - **Final README + architecture diagram + honest "decisions and tradeoffs" writeup** — including the Terraform gap named plainly, not hidden. **There is currently no root `README.md` at all** (only Vite's default `frontend/README.md`).
 - Cleanup: delete `docs/STEP_21_VERIFICATION.md` (the self-generated file whose own "how to verify" section was an unperformed to-do list — see Step 21).
 

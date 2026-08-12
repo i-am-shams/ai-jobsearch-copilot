@@ -830,3 +830,66 @@ Everything below was actually exercised against running containers:
 - Modified: `worker/JobCopilot.Worker/Worker.cs` (adds `RunHeartbeatLoopAsync`, gated on connection/channel state)
 - Modified: `docker-compose.yml` (healthchecks for `api`, `worker`, `frontend`; `Worker__HeartbeatFile`; `frontend` now waits on `api` being healthy)
 - Modified: `frontend/nginx.conf` (exact-match `/health` and `/health/ready` proxy rules)
+
+---
+
+## Step 35: Automated Deployment (CD → VPS)
+
+### Architectural Viewpoint & Arguments
+
+**The central risk in this step is not "will the deploy work" — it is "what does this credential let an attacker do."** A GitHub Actions secret is readable by anyone who can push a workflow change to the repository, and this VPS also runs a live, unrelated production application. A plain deploy key would mean: compromise the repo, get a shell on a server running someone else's business.
+
+The mitigation is a **forced command** in the VPS's `authorized_keys`:
+
+```
+restrict,command="/opt/jobcopilot/deploy.sh" ssh-ed25519 AAAA... github-actions-deploy
+```
+
+`command="..."` makes sshd run *that script and nothing else*, discarding whatever command the client sent. `restrict` disables pty allocation, port/agent/X11 forwarding and `~/.ssh/rc`, and — importantly — automatically inherits any new restrictions added in future OpenSSH versions, which listing options individually does not.
+
+**This was verified rather than assumed**: connecting with the deploy key and explicitly asking for `whoami` ran the deployment script instead. The key genuinely cannot open a shell.
+
+**Host key pinning over `StrictHostKeyChecking=no`.** Disabling host key checking is the common shortcut in CD examples, and it means the pipeline will hand its credential to whatever host answers on that address. `VPS_KNOWN_HOSTS` pins the expected key instead. The value was captured with `ssh-keyscan` and then **cross-checked against the fingerprint this workstation had already trusted** from earlier interactive sessions — a scan alone would happily record a machine-in-the-middle's key.
+
+**`needs: build-and-push` where the dependency is a matrix job** waits for *every* matrix leg. Deploying after only some of the three images had been pushed would put a half-updated stack live.
+
+**`concurrency` queues rather than cancels.** Two pushes in quick succession must not run `docker compose up -d` against the same host simultaneously. `cancel-in-progress: false` is deliberate: cancelling would be right for CI (only the newest commit matters), but a half-finished deployment is worse than a redundant one.
+
+**Readiness is checked but is deliberately non-fatal in the deploy script**, while liveness is fatal. Failing a release because Postgres blipped for two seconds would roll back a perfectly good deployment; a genuinely broken dependency is the uptime monitor's job to report, not the pipeline's.
+
+### Three real bugs, each caught by verifying rather than trusting
+
+**1. A smoke test that asserted nothing (caught before it ever ran).** The script originally checked only the HTTP status code of `/health`. The frontend nginx serves a SPA with a `try_files ... /index.html` fallback, so **every** unmatched path returns `200` with the app's HTML. Testing against the live site *before deploying* showed `/health` returning `200` with a body of `<!doctype html>` — on a deployment where the endpoint did not exist at all. A status-code-only check would have reported success against a completely broken API, forever. Fixed to assert the exact body (`Healthy`). This is the single most valuable finding in the step: the check that looked most obviously correct was the one that meant nothing.
+
+**2. An SSH key with an unintended passphrase.** The first deploy failed with `Permission denied (publickey)` — an error that points at the *secret* or the *authorized_keys entry*. Both were fine. The actual cause was the key generation command: `ssh-keygen -N '""'` run in **PowerShell**, where that quoting does not produce an empty passphrase but a literal one. CI cannot decrypt a passphrase-protected key, so it silently fell back to no usable auth method. Diagnosed by testing the key from the workstation (`ssh-keygen -y` prompted for a passphrase, which a passphrase-free key never does) rather than guessing at the CI side. Regenerated in Git Bash, where `-N ""` behaves. This is the same PowerShell quoting hazard already documented in `AGENTS.md` — the lesson is that it applies to *key generation*, not just to remote commands, and that the resulting failure surfaces two layers away from its cause.
+
+**3. A deploy that succeeded while the smoke test failed (502).** The first successful connection pulled and recreated containers, then immediately smoke-tested and got `502 Bad Gateway`. Not a broken deployment — a **race**: the VPS compose file had no healthchecks on api/worker/frontend yet, so `wait_for_healthy` had nothing to wait on and fell through to the smoke test while the API was still applying EF migrations. The correct fix was to add the Step 34 healthchecks to the VPS compose (so the script has a real gate), not to insert a `sleep`. After that, the pipeline's own log shows `jobcopilot-api: healthy` before the frontend is even started, then both smoke assertions passing.
+
+**Line endings.** `.gitattributes` pins `*.sh` to `eol=lf`. This repo is developed on Windows with `core.autocrlf=true`; a shell script committed from here would arrive on the VPS with CRLF and fail with `bad interpreter: /usr/bin/env bash^M` — an error that gives no hint of the real cause, on a file that looks perfect in an editor. Verified on the VPS after upload: 0 CR characters, and the file's sha256 matched the local copy byte-for-byte.
+
+### Verified end to end
+
+- Pipeline green: three images built and pushed, then `deploy` in 24s.
+- Deploy log shows all five containers waited on and reporting `healthy`, then `liveness: Healthy` and `readiness: Healthy` as body assertions.
+- Full application pipeline re-tested over the real public domain after deployment: register → submit → `Processing` → `Completed`, score 70 with a genuine Gemini gap analysis.
+- **Co-hosted project confirmed unaffected**: `https://pms.dentflowbd.com/health` → `200`, its three containers still at three weeks' uptime.
+
+### Plain-Language Definitions
+
+- **Forced command (`command=` in `authorized_keys`):** an option attached to a specific public key that makes sshd ignore whatever the client asked to run and execute a fixed command instead. Turns a general-purpose credential into a single-purpose one.
+- **`restrict` (authorized_keys option):** a catch-all that disables pty allocation and all forwarding, and keeps inheriting future restrictions. Safer than enumerating individual `no-*` options, which silently miss anything added later.
+- **Host key pinning:** recording the server's expected public host key in advance so SSH refuses to connect to an impostor. `StrictHostKeyChecking=no` disables exactly this protection.
+- **Liveness vs. readiness in a deployment gate:** liveness failing means the release is broken (fail the pipeline); readiness failing may just mean a dependency is briefly unavailable (warn, don't fail).
+- **Dangling image:** an image layer no longer referenced by any tag. `docker image prune -f` removes only these; `-a` would also remove tagged images that merely have no running container — which on a shared host would delete another project's images.
+
+### File Mapping
+
+- Created: `deploy/deploy.sh` (pull → up -d → wait for health → public smoke test → prune; deployed to `/opt/jobcopilot/deploy.sh`, mode 750)
+- Created: `.gitattributes` (pins `*.sh`, `Dockerfile`, `*.conf` to LF; `*.ps1` to CRLF)
+- Modified: `.github/workflows/cd.yml` (adds `deploy` job gated on all matrix legs, workflow-level `concurrency`, pinned host key, deploy-key cleanup step)
+- Changed on the VPS (not in git): `~/.ssh/authorized_keys` (one appended restricted key line — the two co-hosted project keys untouched), `/opt/jobcopilot/docker-compose.yml` (Step 34 healthchecks + `Worker__HeartbeatFile` + `frontend` waits on api healthy)
+- GitHub repository secrets added: `VPS_HOST`, `VPS_USER`, `VPS_KNOWN_HOSTS`, `VPS_SSH_PRIVATE_KEY`
+
+### Known gap, named honestly
+
+Deployment targets the `:latest` tag, not the commit SHA. Images *are* tagged with both, so the artifacts for a precise rollback exist — but the deploy script always pulls `latest`, so rolling back means manually editing the VPS compose file. Pinning the deploy to a SHA would need the deploy key to accept an argument, which cuts against the forced-command hardening that makes this key safe to hold. Doing it properly (validating the argument against `^[0-9a-f]{40}$` inside the forced command, via `SSH_ORIGINAL_COMMAND`) is a genuine improvement and is listed as a Future Addition rather than quietly skipped.
