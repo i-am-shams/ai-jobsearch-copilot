@@ -1,0 +1,35 @@
+flowchart TD
+    B["Browser<br/>React 19 + TypeScript SPA"]
+
+    subgraph VPS["Single VPS (Docker Compose)"]
+        N["nginx<br/><i>shared with an unrelated<br/>production app</i>"]
+
+        subgraph STACK["jobcopilot stack"]
+            F["frontend container<br/>nginx: serves SPA,<br/>proxies /api /hubs /health"]
+            A["API<br/>ASP.NET Core 8"]
+            W["Worker<br/>BackgroundService"]
+            P[("PostgreSQL 16")]
+            Q{{"RabbitMQ"}}
+        end
+    end
+
+    G["Google Gemini API"]
+
+    B -->|"HTTPS"| N
+    N -->|"container name<br/>via shared Docker network"| F
+    F --> A
+    A -->|"EF Core"| P
+    A -->|"publish<br/>match-requests"| Q
+    Q -->|"consume"| W
+    W -->|"scores the match"| G
+    W -->|"write result"| P
+    W -->|"publish<br/>match-completed"| Q
+    Q -->|"consume"| A
+    A -.->|"SignalR push<br/>per-user group"| B
+
+    classDef infra fill:#e8eef7,stroke:#5b7ba6,color:#1a2634
+    classDef app fill:#e6f2ea,stroke:#4f8a68,color:#14251b
+    classDef ext fill:#f7efe3,stroke:#b08a4f,color:#2e2415
+    class N,F infra
+    class A,W,P,Q app
+    class G,B ext

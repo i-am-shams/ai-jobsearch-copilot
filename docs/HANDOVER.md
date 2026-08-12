@@ -339,11 +339,17 @@ ai-jobsearch-copilot/
     - **Verified**: pipeline green (`deploy` in 24s), deploy log shows all 5 containers healthy then `liveness: Healthy` / `readiness: Healthy`; full app pipeline re-tested over the public domain (register → submit → `Completed`, score 70, real Gemini analysis); **co-hosted <other-app> confirmed unaffected** (`/health` → 200, 3-week uptime intact).
     - **Known gap, named honestly**: deploys pull `:latest`, not the commit SHA, so rollback means editing the VPS compose by hand. SHA-pinning needs the forced command to accept a validated argument — listed as a Future Addition, not quietly skipped.
 
+36. ✅ **Final README, architecture diagram, and decisions/tradeoffs writeup — Project 1's last build deliverable.** Root `README.md` written for a hiring-manager audience: live URL and what it does up front, Mermaid architecture diagram, request-flow walkthrough, tech stack and API surface, then **"Decisions and tradeoffs" as the centrepiece** (async pipeline vs. synchronous call, liveness/readiness split, the connection-gated worker heartbeat, the forced-command deploy key, zero-touch integration with the co-hosted app, prompt-injection hardening). A **"Known gaps"** section names the real ones plainly: no IaC/Terraform, `:latest` deploys with manual rollback, failed matches not pushing SignalR, single API instance, in-memory rate limiting, only four tests.
+    - Diagram is Mermaid (renders natively on GitHub, diffable) **plus** a committed `docs/architecture.png` rendered via `@mermaid-js/mermaid-cli`, with `docs/architecture.mmd` as the extracted source. The PNG is *linked*, not embedded inline — GitHub renders the Mermaid block itself, so embedding both would show the diagram twice on the page.
+    - Cleanup done: deleted `docs/STEP_21_VERIFICATION.md` (the self-generated file whose own "how to verify" section was an unperformed to-do list).
+
 ## Next Step
 
-- **Register an external uptime monitor** against `https://jobcopilot.dentflowbd.com/health` (UptimeRobot — free, no card). This is the last outstanding piece of Step 34. **Monitor the body, not just the status code** — the SPA fallback makes a 200 meaningless on its own (see Step 35, bug 1).
-- **Final README + architecture diagram + honest "decisions and tradeoffs" writeup** — including the Terraform gap named plainly, not hidden. **There is currently no root `README.md` at all** (only Vite's default `frontend/README.md`).
-- Cleanup: delete `docs/STEP_21_VERIFICATION.md` (the self-generated file whose own "how to verify" section was an unperformed to-do list — see Step 21).
+**Project 1 is functionally complete.** One item outstanding, then it's finished:
+
+- **Register an external uptime monitor** against `https://jobcopilot.dentflowbd.com/health` (UptimeRobot — free, no card). Last outstanding piece of Step 34. **Match the response body keyword `Healthy`, not just a 200 status** — the frontend's SPA fallback returns 200 with `index.html` for any unmatched path, so a status-only monitor here is decorative (this exact false positive is documented in Step 35, bug 1).
+
+After that, the roadmap (`docs/Full_Stack_Developer_Transition_Roadmap.md`) moves on to **Project 2 — break a slice into microservices + cloud-native deploy**, and the interview-preparation track.
 
 > **Tooling constraint for whoever picks this up:** in the current Claude Code environment, `ssh` is blocked by the harness permission classifier and `gh` is not installed, so VPS and GitHub-secret work is guided manual execution (Claude writes exact commands, user runs them, pastes results back) — same as Step 33, for a different underlying reason.
 
