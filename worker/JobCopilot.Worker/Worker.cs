@@ -62,7 +62,53 @@ public class Worker : BackgroundService
         _channel.BasicConsume("match-requests", autoAck: false, consumer);
         _logger.LogInformation("Worker started and listening for match requests");
 
-        await Task.Delay(Timeout.Infinite, stoppingToken);
+        await RunHeartbeatLoopAsync(stoppingToken);
+    }
+
+    /// <summary>
+    /// Writes a heartbeat file that the container healthcheck reads the mtime of.
+    ///
+    /// The worker has no HTTP surface, so there is no /health endpoint to poll -
+    /// a file's freshness is the cheapest honest liveness signal available, and
+    /// needs no extra tooling in the runtime image (the aspnet:8.0 image has no
+    /// curl/wget, but does have stat/date).
+    ///
+    /// Deliberately gated on the AMQP connection AND channel still being open:
+    /// a worker whose process is alive but has silently lost its RabbitMQ
+    /// connection consumes nothing at all, yet a plain "is the process running"
+    /// check would report it perfectly healthy - exactly the failure this is
+    /// meant to catch.
+    /// </summary>
+    private async Task RunHeartbeatLoopAsync(CancellationToken stoppingToken)
+    {
+        var heartbeatPath = _config["Worker:HeartbeatFile"]
+            ?? Path.Combine(Path.GetTempPath(), "worker-heartbeat");
+
+        _logger.LogInformation("Writing liveness heartbeat to {Path}", heartbeatPath);
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            if (_connection is { IsOpen: true } && _channel is { IsOpen: true })
+            {
+                try
+                {
+                    File.WriteAllText(heartbeatPath, DateTimeOffset.UtcNow.ToString("O"));
+                }
+                catch (Exception ex)
+                {
+                    // Never let a heartbeat-write failure take down the worker -
+                    // going stale (and so unhealthy) is the correct signal here.
+                    _logger.LogWarning(ex, "Failed to write heartbeat file {Path}", heartbeatPath);
+                }
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "RabbitMQ connection or channel is closed - skipping heartbeat write");
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
+        }
     }
 
     private async Task<IConnection> ConnectWithRetryAsync(

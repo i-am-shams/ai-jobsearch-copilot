@@ -776,3 +776,57 @@ Verification happened in stages, each one actually exercised rather than assumed
 - Created: `/opt/<other-app>/nginx/conf.d/jobcopilot.conf` — new file only, existing `<other-app>.conf` never touched
 - **Not modified at all**: the co-hosted project's `docker-compose.yml`, any of its existing nginx config, its database, its running containers
 - **Verified, not just deployed**: full pipeline confirmed live over the real public domain — auth, async matching via Postgres/RabbitMQ/worker/Gemini all running on the VPS, and live SignalR push confirmed by the user in a real browser through both proxy layers. Co-hosted project's own health check confirmed unaffected immediately after the nginx reload.
+
+---
+
+## Step 34: Health Checks & Monitoring
+
+### Architectural Viewpoint & Arguments
+
+**The single most important decision here is splitting liveness from readiness**, rather than exposing one catch-all `/health` that checks everything. They answer genuinely different questions and have opposite failure semantics:
+
+- **`/health` (liveness)** — "is this process up and serving HTTP?" Runs **no** dependency checks at all (`Predicate = _ => false`). This is what Docker's `healthcheck` polls, and Docker *kills and restarts* containers that fail it. If liveness also checked Postgres, then a 20-second database blip would cause Docker to destroy a perfectly healthy API container that would otherwise have ridden the blip out — converting a recoverable dependency hiccup into a self-inflicted outage, and potentially into a restart loop that makes recovery *slower*.
+- **`/health/ready` (readiness)** — "can this API actually do its job?" Checks Postgres (via `AddDbContextCheck`) and RabbitMQ. This is diagnostic and monitoring-facing; nothing restarts a container because of it.
+
+Conflating the two is one of the most common health-check mistakes, and its damage only shows up during exactly the incidents health checks exist to help with.
+
+**The RabbitMQ check deliberately opens its own short-lived connection** rather than inspecting the one held by `RabbitMqPublisher`. That publisher connects *lazily*, on first publish — so on an idle API during a broker outage, its connection field is still `null` and any check based on it would report healthy right up until the first real user submission failed. A health check that only turns red once a user has already hit the error is worthless.
+
+**It is hand-rolled rather than pulling in a third-party health-check package** (`AspNetCore.HealthChecks.*`). This project has been bitten repeatedly by NuGet version drift across the .NET 8 boundary (see Steps 29–31); ~40 lines of obvious code with no version to pin is a better trade here than a dependency for the same result.
+
+**The worker's health check is a heartbeat file, not an HTTP endpoint** — the worker is a `BackgroundService` with no HTTP surface, and adding an entire web server to it purely to answer health probes would be a poor trade. It writes a timestamp to a file every 15s; the container health check compares that file's mtime against now.
+
+The critical detail: **the heartbeat write is gated on the AMQP connection *and* channel still being open.** A worker process can be alive and consuming nothing at all — if its RabbitMQ connection silently drops, the process keeps running happily while every submitted application sits in `Pending` forever. A naive "is the process running?" check reports that state as perfectly healthy. Gating the heartbeat is what turns an invisible failure into a visible one.
+
+**Exposing health through the frontend's own nginx** (`location = /health`) rather than asking the VPS's shared nginx for a new rule keeps the Step 33 property intact: the outer proxy still only needs the single `/` rule it already has, so making health externally monitorable required **zero changes to the nginx config shared with the co-hosted production project**.
+
+**Readiness keeps the default plain-text response** (`Healthy`/`Unhealthy`) rather than a detailed JSON writer. It is reachable unauthenticated over the public domain, and per-dependency failure detail would tell an unauthenticated caller exactly which internal component is down and what it is — free reconnaissance for no operational gain, since the people who need detail have container logs.
+
+### Verified against real failure, not just the happy path
+
+Everything below was actually exercised against running containers:
+
+1. **Cold start ordering** — `frontend` now uses `depends_on: api: condition: service_healthy`, and was observed genuinely *waiting* for the API to report healthy before starting. Previously a plain `depends_on` let nginx start proxying to an API that couldn't yet serve, producing 502s for anyone quick enough.
+2. **A real bug, findable only by running it** — the frontend sat permanently `unhealthy`. Cause: nginx listens on `0.0.0.0:80` (IPv4 only), but `localhost` resolves to `::1` first inside that container, so busybox `wget` got a flat connection-refused. Fixed by using `127.0.0.1` explicitly. A health check that is itself broken is worse than none — it produces alert fatigue and masks real failures.
+3. **Liveness/readiness split proven under real failure** — with RabbitMQ stopped: `/health` → `200 Healthy` (API not restarted, correct), `/health/ready` → `503` (correct). This is the exact scenario the split exists for, and it behaved as designed.
+4. **The silent-worker-death case caught** — with RabbitMQ stopped, the worker container went `unhealthy` while its process was still running, with `RabbitMQ connection or channel is closed - skipping heartbeat write` in the logs. This is the failure a process-liveness check cannot see.
+5. **Self-healing recovery confirmed** — restarting RabbitMQ brought the worker back to `healthy` with **no container restart required**. `RabbitMQ.Client` has automatic connection recovery enabled by default, and this verified it genuinely works rather than assuming it from documentation.
+6. **No regression to the actual feature** — the heartbeat loop replaced `await Task.Delay(Timeout.Infinite, stoppingToken)` as the method's terminal await, so a submitted application was pushed through afterwards to confirm the worker still consumes from the queue.
+
+### Plain-Language Definitions
+
+- **Liveness probe:** "is this thing alive enough to keep?" A failure means *restart it*. Should depend on as little as possible, because acting on it is destructive.
+- **Readiness probe:** "is this thing able to serve real work right now?" A failure means *stop sending it traffic* (or, here, *alert someone*) — but not restart it. Depends on downstream services by design.
+- **`start_period` (Docker healthcheck):** a grace window after container start during which failing health checks don't count against the retry budget. Without it, slow-starting services (the API applies EF migrations on boot; the worker waits up to 40s for its first heartbeat) get killed before they ever had a chance to become healthy.
+- **Heartbeat file:** a file whose *modification time* is the signal — the content is irrelevant. Freshness of the mtime proves a loop is still turning. Useful precisely where there's no network surface to probe.
+- **Automatic connection recovery (RabbitMQ.Client):** the client library transparently re-establishes connections, channels, and consumer registrations after a broker outage, enabled by default in the 6.x client. It's why the worker recovered on its own rather than needing Docker to restart it.
+
+### File Mapping
+
+- Created: `api/JobCopilot.Api/HealthChecks/RabbitMqHealthCheck.cs`
+- Modified: `api/JobCopilot.Api/Program.cs` (registers `AddHealthChecks` with `postgres`/`rabbitmq` checks tagged `ready`; maps `/health` and `/health/ready`)
+- Modified: `api/JobCopilot.Api/JobCopilot.Api.csproj` (adds `Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore` `8.0.10`, pinned to match every other EF Core package)
+- Modified: `api/JobCopilot.Api/Dockerfile` (installs `curl` — verified absent from `mcr.microsoft.com/dotnet/aspnet:8.0`, along with `wget` and `nc`; only coreutils ship in that image)
+- Modified: `worker/JobCopilot.Worker/Worker.cs` (adds `RunHeartbeatLoopAsync`, gated on connection/channel state)
+- Modified: `docker-compose.yml` (healthchecks for `api`, `worker`, `frontend`; `Worker__HeartbeatFile`; `frontend` now waits on `api` being healthy)
+- Modified: `frontend/nginx.conf` (exact-match `/health` and `/health/ready` proxy rules)

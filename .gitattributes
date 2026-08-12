@@ -1,0 +1,11 @@
+# This repo is developed on Windows (core.autocrlf=true) but several files are
+# consumed by Linux. Without pinning these, a shell script committed from
+# Windows arrives on the VPS with CRLF line endings and fails immediately with
+# "bad interpreter: /usr/bin/env bash^M" - a genuinely confusing error, since
+# the file looks completely correct in an editor.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.conf text eol=lf
+
+# PowerShell scripts stay CRLF - these only ever run on Windows.
+*.ps1 text eol=crlf

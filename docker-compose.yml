@@ -50,6 +50,15 @@ services:
       Jwt__Issuer: "JobCopilotApi"
       Jwt__Audience: "JobCopilotClient"
       Jwt__ExpiryMinutes: "60"
+    # Hits the LIVENESS endpoint, not readiness: Docker restarts containers that
+    # fail this, and killing a healthy API because Postgres blipped for 20s would
+    # turn a recoverable dependency hiccup into an outage of its own.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,6 +76,18 @@ services:
       RabbitMq__Username: jobcopilot
       RabbitMq__Password: devpassword
       Gemini__ApiKey: ${GEMINI_API_KEY}
+      Worker__HeartbeatFile: /tmp/worker-heartbeat
+    # The worker has no HTTP surface, so liveness is "has it written a fresh
+    # heartbeat recently?" - and it only writes one while its RabbitMQ
+    # connection is genuinely open (see Worker.RunHeartbeatLoopAsync). The $$
+    # escaping is required: a single $ would be swallowed by Compose's own
+    # variable interpolation before the shell ever sees it.
+    healthcheck:
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /tmp/worker-heartbeat) )) -lt 60"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,8 +101,23 @@ services:
     ports:
       # Loopback-only, same reasoning as api above.
       - "127.0.0.1:5173:80"
+    # nginx:alpine has busybox wget (but no curl), unlike the aspnet image.
+    # 127.0.0.1 rather than "localhost" is deliberate and was found the hard
+    # way: nginx here listens on 0.0.0.0:80 (IPv4 only), but "localhost"
+    # resolves to ::1 first inside the container, so busybox wget got a flat
+    # connection-refused and the container sat permanently unhealthy.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Upgraded from a plain depends_on: the frontend proxies /api and /hubs to
+    # the API, so starting it before the API can serve requests just produces
+    # 502s for anyone quick enough to load the page.
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:

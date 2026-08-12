@@ -7,6 +7,13 @@ on:
 env:
   REGISTRY: ghcr.io
 
+# Two pushes in quick succession must not deploy concurrently - the second
+# would race the first's "docker compose up -d" on the same host. Queue them
+# instead of cancelling, so the newest commit is always what ends up deployed.
+concurrency:
+  group: cd-deploy
+  cancel-in-progress: false
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -39,3 +46,46 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.image }}:latest
             ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.image }}:${{ github.sha }}
+
+  deploy:
+    # "needs" on a matrix job waits for EVERY matrix leg, which is exactly what
+    # is wanted here: deploying after only some of the three images had been
+    # pushed would put a half-updated stack live.
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          # Pinned host key rather than StrictHostKeyChecking=no. Disabling the
+          # check would make the deploy trust whatever answers on that address,
+          # which is precisely the machine-in-the-middle case host keys exist
+          # to prevent - and this key, though restricted, still reaches a host
+          # running a live unrelated production app.
+          printf '%s\n' "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy to VPS
+        # The command sent here is ignored: the deploy key is pinned to
+        # /opt/jobcopilot/deploy.sh by a forced command in the VPS's
+        # authorized_keys, so this is only a readable placeholder. The script
+        # exits non-zero if any container fails to become healthy or the public
+        # smoke test fails, which fails this job visibly rather than silently
+        # leaving a broken deployment live.
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+              -o BatchMode=yes \
+              -o ConnectTimeout=20 \
+              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              deploy
+
+      - name: Remove deploy key
+        # Runners are ephemeral, but never leave a private key sitting on disk
+        # for later steps regardless - cheap, and correct if steps are ever added.
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519

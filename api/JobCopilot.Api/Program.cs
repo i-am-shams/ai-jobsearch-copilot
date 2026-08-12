@@ -1,10 +1,12 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Threading.RateLimiting;
+using JobCopilot.Api.HealthChecks;
 using JobCopilot.Api.Hubs;
 using JobCopilot.Api.Messaging;
 using JobCopilot.Api.Services;
 using JobCopilot.Contracts;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -59,6 +61,13 @@ builder.Services.AddCors(options =>
               .AllowCredentials();
     });
 });
+
+// Health checks. Split deliberately into liveness vs readiness (see the two
+// endpoint mappings below) - conflating them is a common mistake that makes a
+// transient dependency blip kill and restart an otherwise-fine container.
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<AppDbContext>("postgres", tags: new[] { "ready" })
+    .AddCheck<RabbitMqHealthCheck>("rabbitmq", tags: new[] { "ready" });
 
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
@@ -121,5 +130,24 @@ app.UseAuthorization();
 
 app.MapControllers();
 app.MapHub<MatchHub>("/hubs/match");
+
+// Liveness: "is this process up and serving HTTP?" Runs NO dependency checks
+// (Predicate = _ => false). This is what Docker's healthcheck and the external
+// uptime monitor hit - a Postgres blip should not cause Docker to kill and
+// restart an API container that is itself perfectly fine and would recover.
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    Predicate = _ => false
+});
+
+// Readiness: "can this API actually do its job?" - Postgres reachable and
+// RabbitMQ accepting connections. Left with the default plain-text response
+// ("Healthy"/"Unhealthy") rather than a detailed JSON writer, because this is
+// reachable unauthenticated over the public domain and per-dependency failure
+// detail would leak internal topology to anyone who asks.
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
 
 app.Run();
