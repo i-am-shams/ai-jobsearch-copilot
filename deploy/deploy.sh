@@ -86,20 +86,33 @@ done
 # only check that exercises the whole path an actual user takes: DNS, TLS, the
 # co-hosted project's outer nginx, this project's frontend nginx, then the API.
 # Container health alone would still pass if, say, an nginx route broke.
+#
+# The BODY is asserted, not just the status code, and that distinction is not
+# academic: the frontend nginx serves a SPA with a `try_files ... /index.html`
+# fallback, so *every* unmatched path returns 200 with the app's HTML. A
+# status-code-only check was verified to pass against a deployment that had no
+# /health endpoint at all - it was matching the SPA fallback. Asserting the
+# exact body is what makes this test mean anything.
 echo "==> Public smoke test"
-live_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/health" || echo 000)"
-if [ "$live_code" != "200" ]; then
-  echo "!! Deployment failed: ${PUBLIC_URL}/health returned ${live_code} (expected 200)"
+live_body="$(curl -sS --max-time 20 "${PUBLIC_URL}/health" 2>/dev/null || echo '')"
+if [ "$live_body" != "Healthy" ]; then
+  echo "!! Deployment failed: ${PUBLIC_URL}/health did not return the health endpoint."
+  echo "   Expected body 'Healthy', got: $(printf '%.120s' "$live_body")"
+  echo "   (A SPA-looking HTML body here means the /health nginx route is missing.)"
   exit 1
 fi
-echo "    liveness:  200"
+echo "    liveness:  Healthy"
 
 # Readiness is reported but deliberately NOT fatal. It depends on Postgres and
 # RabbitMQ both accepting connections; failing the deploy on a transient
 # dependency blip would roll a perfectly good release back for no reason. A
 # genuinely broken dependency will be caught by the uptime monitor instead.
-ready_code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/health/ready" || echo 000)"
-echo "    readiness: ${ready_code}$([ "$ready_code" != "200" ] && echo '  (WARNING - dependencies not ready)' || echo '')"
+ready_body="$(curl -sS --max-time 20 "${PUBLIC_URL}/health/ready" 2>/dev/null || echo '')"
+if [ "$ready_body" = "Healthy" ]; then
+  echo "    readiness: Healthy"
+else
+  echo "    readiness: WARNING - not ready (got: $(printf '%.120s' "$ready_body"))"
+fi
 
 # Old image layers accumulate on every deploy and this VPS has finite disk that
 # a live unrelated project also depends on. Only dangling images are removed -
