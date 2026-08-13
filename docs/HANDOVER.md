@@ -1,5 +1,21 @@
 # AI Job-Search Copilot — Project Handover / State Doc
 
+> **Placeholders in this document.** This repository is public. Anything that
+> identifies the specific server or the unrelated production app that shares it
+> has been replaced with a placeholder, while every architectural decision and
+> lesson is kept verbatim — the reasoning is the point, the hostnames are not.
+>
+> | Placeholder | Means |
+> |---|---|
+> | `<vps-host>` | The VPS's address |
+> | `<deploy-user>` | The unprivileged SSH user used for deployment |
+> | `<other-app>` | A separate, unrelated production app co-hosted on the same VPS |
+>
+> No secret was ever committed to this repository: production values live only in
+> `/opt/jobcopilot/.env` on the server and in local `user-secrets`.
+
+
+
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
 **Last updated:** Steps 34–36 complete — health checks, **automated deploy on push to `master`** (verified green end-to-end), and the final README + architecture diagram + tradeoffs writeup. **Project 1's roadmap steps are done.** Now in a deliberate polish-and-publish interlude before Project 2: finish the frontend modernisation, audit for more bugs of the `gapAnalysis` class, sanitize docs and make the repo public, and refresh the portfolio site. See **"Next Step — an interlude before Project 2"** below.
@@ -8,18 +24,18 @@
 
 ## 🚀 LIVE DEPLOYMENT
 
-**https://jobcopilot.dentflowbd.com** — running on the user's own VPS (`144.79.132.100`), alongside their other production project (<other-app>), sharing its nginx via a Docker external network, zero disruption to it. Full pipeline live-verified: auth, async matching (Postgres/RabbitMQ/worker/Gemini all containerized on the VPS), and live SignalR push confirmed in a real browser through two layers of nginx.
+**https://jobcopilot.dentflowbd.com** — running on the user's own VPS (`<vps-host>`), alongside their other production project (name withheld), sharing its nginx via a Docker external network, zero disruption to it. Full pipeline live-verified: auth, async matching (Postgres/RabbitMQ/worker/Gemini all containerized on the VPS), and live SignalR push confirmed in a real browser through two layers of nginx.
 
 - VPS deployment files live at `/opt/jobcopilot/docker-compose.yml` and `/opt/jobcopilot/.env` **on the VPS itself, not in this git repo** (environment-specific, contains real secrets)
 - New nginx site config: `/opt/<other-app>/nginx/conf.d/jobcopilot.conf` (new file, existing config for the other project untouched)
-- **Deployment is automated (Step 35): pushing to `master` builds the three images and deploys them.** The manual fallback is still `ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose pull && docker compose up -d"`, but prefer re-running the CD workflow (`gh run rerun <id> --failed`) so the health gating and smoke test actually run.
-- **`/opt/jobcopilot/deploy.sh` on the VPS is the deployment entry point** and is the *only* thing the CD key may execute (forced command). Its source of truth lives in this repo at `deploy/deploy.sh` — **if you edit it there, it does not update on the VPS automatically**; re-upload it: `ssh <deploy-user>@144.79.132.100 'cat > /opt/jobcopilot/deploy.sh && chmod 750 /opt/jobcopilot/deploy.sh' < deploy/deploy.sh` (run from Git Bash — PowerShell has no `<` redirection).
+- **Deployment is automated (Step 35): pushing to `master` builds the three images and deploys them.** The manual fallback is still `ssh <deploy-user>@<vps-host> "cd /opt/jobcopilot && docker compose pull && docker compose up -d"`, but prefer re-running the CD workflow (`gh run rerun <id> --failed`) so the health gating and smoke test actually run.
+- **`/opt/jobcopilot/deploy.sh` on the VPS is the deployment entry point** and is the *only* thing the CD key may execute (forced command). Its source of truth lives in this repo at `deploy/deploy.sh` — **if you edit it there, it does not update on the VPS automatically**; re-upload it: `ssh <deploy-user>@<vps-host> 'cat > /opt/jobcopilot/deploy.sh && chmod 750 /opt/jobcopilot/deploy.sh' < deploy/deploy.sh` (run from Git Bash — PowerShell has no `<` redirection).
 
 ## VPS Reference — full detail (so this isn't only reconstructable by SSHing in)
 
-**Access:** `<deploy-user>@144.79.132.100`, Ubuntu 24.04, SSH key already configured on this machine. `<deploy-user>` is in the `docker` group (no sudo for docker commands); sudo needs an interactive password (use `ssh -t` if ever needed).
+**Access:** `<deploy-user>@<vps-host>`, Ubuntu 24.04, SSH key already configured on this machine. `<deploy-user>` is in the `docker` group (no sudo for docker commands); sudo needs an interactive password (use `ssh -t` if ever needed).
 
-**Directory layout:** `/opt/<project>` convention, matching the co-hosted <other-app> project. Ours: `/opt/jobcopilot/` (owned by `<deploy-user>`, created via one-time `sudo mkdir` + `chown`).
+**Directory layout:** `/opt/<project>` convention, matching the co-hosted production app. Ours: `/opt/jobcopilot/` (owned by `<deploy-user>`, created via one-time `sudo mkdir` + `chown`).
 
 **Docker network:** the co-hosted project's nginx runs *inside Docker*, on a named bridge network `<other-app>_<other-app>-private` (confirmed via `docker network ls` — not a guessable default name). Our `frontend` service joins this as an `external: true` network so the co-hosted nginx can reach it by container name — **zero changes to the co-hosted project's own files**.
 
@@ -156,17 +172,17 @@ server {
 **Common operational commands:**
 ```bash
 # redeploy after a new image push
-ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose pull && docker compose up -d"
+ssh <deploy-user>@<vps-host> "cd /opt/jobcopilot && docker compose pull && docker compose up -d"
 
 # check status
-ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose ps"
+ssh <deploy-user>@<vps-host> "cd /opt/jobcopilot && docker compose ps"
 
 # view logs
-ssh <deploy-user>@144.79.132.100 "cd /opt/jobcopilot && docker compose logs -f worker"  # or api/frontend/postgres/rabbitmq
+ssh <deploy-user>@<vps-host> "cd /opt/jobcopilot && docker compose logs -f worker"  # or api/frontend/postgres/rabbitmq
 
 # validate + reload nginx after any config change (ALWAYS in this order)
-ssh <deploy-user>@144.79.132.100 "docker exec <other-app>-nginx nginx -t"
-ssh <deploy-user>@144.79.132.100 "docker exec <other-app>-nginx nginx -s reload"
+ssh <deploy-user>@<vps-host> "docker exec <other-app>-nginx nginx -t"
+ssh <deploy-user>@<vps-host> "docker exec <other-app>-nginx nginx -s reload"
 ```
 
 > **Working preferences, tooling gotchas, and standing rules for shared-infrastructure work now live in `AGENTS.md` at the repo root** (auto-read by Claude Code and similar tools). This file covers project state only — what's done, what's next, and the deployed facts.
@@ -332,13 +348,13 @@ ai-jobsearch-copilot/
     - Also verified no regression: message consumption still works after the heartbeat loop replaced the worker's terminal `Task.Delay(Timeout.Infinite)`.
     - **Still outstanding for this step (both manual, not yet done):** update `/opt/jobcopilot/docker-compose.yml` on the VPS with the same healthchecks, and register `https://jobcopilot.dentflowbd.com/health` with an external uptime monitor (UptimeRobot — free, no card).
 
-35. ✅ **Automated deployment — pushes to `master` now deploy to the VPS, fully verified green end-to-end.** `cd.yml` gained a `deploy` job gated on all three image builds. The deploy key is **pinned by a forced command** (`restrict,command="/opt/jobcopilot/deploy.sh"`) in the VPS's `authorized_keys`, so a leaked GitHub secret cannot open a shell on the box that also runs the live <other-app> app — **verified by connecting with the key and asking for `whoami`, which ran the deploy script instead.** Host key pinned via `VPS_KNOWN_HOSTS` (cross-checked against the fingerprint this workstation already trusted) rather than disabling host key checking. `deploy.sh` pulls, applies, waits for every container to report healthy, smoke-tests the real public URL, and prunes dangling images.
+35. ✅ **Automated deployment — pushes to `master` now deploy to the VPS, fully verified green end-to-end.** `cd.yml` gained a `deploy` job gated on all three image builds. The deploy key is **pinned by a forced command** (`restrict,command="/opt/jobcopilot/deploy.sh"`) in the VPS's `authorized_keys`, so a leaked GitHub secret cannot open a shell on the box that also runs the live the co-hosted app app — **verified by connecting with the key and asking for `whoami`, which ran the deploy script instead.** Host key pinned via `VPS_KNOWN_HOSTS` (cross-checked against the fingerprint this workstation already trusted) rather than disabling host key checking. `deploy.sh` pulls, applies, waits for every container to report healthy, smoke-tests the real public URL, and prunes dangling images.
     - **Three real bugs, each found by verifying rather than trusting:**
       1. **A smoke test that asserted nothing** — it checked only the HTTP status of `/health`, but the frontend's SPA `try_files` fallback returns `200` with `index.html` for *any* unmatched path. Proven against the live site *before* deploying: `/health` returned `200` with `<!doctype html>` on a deployment where the endpoint didn't exist. Now asserts the exact body (`Healthy`).
       2. **The deploy key had an unintended passphrase** — `ssh-keygen -N '""'` in **PowerShell** produces a literal passphrase, not an empty one. CI failed with `Permission denied (publickey)`, which points at the secret, not the key. Diagnosed by testing the key locally; regenerated in Git Bash. Same PowerShell quoting hazard already in `AGENTS.md`, applied to key generation.
       3. **A 502 on the first successful deploy** — a race, not a breakage: the VPS compose had no healthchecks yet, so the script had nothing to wait on and smoke-tested while the API was still applying EF migrations. Fixed at the cause by adding the Step 34 healthchecks to the VPS compose, not with a `sleep`.
     - Added `.gitattributes` pinning `*.sh` to LF — with `core.autocrlf=true`, a committed `deploy.sh` would reach the VPS with CRLF and die on `bad interpreter: ...^M`. Verified 0 CR chars and a matching sha256 on the VPS.
-    - **Verified**: pipeline green (`deploy` in 24s), deploy log shows all 5 containers healthy then `liveness: Healthy` / `readiness: Healthy`; full app pipeline re-tested over the public domain (register → submit → `Completed`, score 70, real Gemini analysis); **co-hosted <other-app> confirmed unaffected** (`/health` → 200, 3-week uptime intact).
+    - **Verified**: pipeline green (`deploy` in 24s), deploy log shows all 5 containers healthy then `liveness: Healthy` / `readiness: Healthy`; full app pipeline re-tested over the public domain (register → submit → `Completed`, score 70, real Gemini analysis); **the co-hosted app confirmed unaffected** (`/health` → 200, 3-week uptime intact).
     - **Known gap, named honestly**: deploys pull `:latest`, not the commit SHA, so rollback means editing the VPS compose by hand. SHA-pinning needs the forced command to accept a validated argument — listed as a Future Addition, not quietly skipped.
 
 36. ✅ **Final README, architecture diagram, and decisions/tradeoffs writeup — Project 1's last build deliverable.** Root `README.md` written for a hiring-manager audience: live URL and what it does up front, Mermaid architecture diagram, request-flow walkthrough, tech stack and API surface, then **"Decisions and tradeoffs" as the centrepiece** (async pipeline vs. synchronous call, liveness/readiness split, the connection-gated worker heartbeat, the forced-command deploy key, zero-touch integration with the co-hosted app, prompt-injection hardening). A **"Known gaps"** section names the real ones plainly: no IaC/Terraform, `:latest` deploys with manual rollback, failed matches not pushing SignalR, single API instance, in-memory rate limiting, only four tests.
@@ -370,7 +386,7 @@ The `gapAnalysis` bug — data generated, stored, returned by the API, and silen
 
 Decision taken: **sanitize the docs first, then publish** (no history rewrite).
 - **Git history is already clean of real secrets** — verified: no Gemini keys, no private keys, no tokens. Only `devpassword` and a self-labelled throwaway JWT key.
-- **What must be sanitized before publishing** — `docs/HANDOVER.md` and `docs/ARCHITECTURE_CONCEPTS.md` currently contain the **VPS IP, the SSH username (`deploy`), exact server paths, the Docker network name, the full nginx config, and the co-hosted <other-app> project's details**. The IP is DNS-discoverable from the live domain anyway, but the SSH username, directory layout and "this box also runs another production app" are not. Replace with placeholders; **keep every architectural lesson**, since the reasoning is the portfolio value.
+- **What must be sanitized before publishing** — `docs/HANDOVER.md` and `docs/ARCHITECTURE_CONCEPTS.md` currently contain the **VPS IP, the SSH username (`deploy`), exact server paths, the Docker network name, the full nginx config, and the co-hosted production app's details**. The IP is DNS-discoverable from the live domain anyway, but the SSH username, directory layout and "this box also runs another production app" are not. Replace with placeholders; **keep every architectural lesson**, since the reasoning is the portfolio value.
 - Then `gh repo edit i-am-shams/ai-jobsearch-copilot --visibility public`, and pin it on the GitHub profile (pinning is a profile setting, done in the web UI).
 
 ### D. Review and update the portfolio site

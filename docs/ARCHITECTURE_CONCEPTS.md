@@ -1,5 +1,21 @@
 # Architecture & Concepts — Onboarding Document
 
+> **Placeholders in this document.** This repository is public. Anything that
+> identifies the specific server or the unrelated production app that shares it
+> has been replaced with a placeholder, while every architectural decision and
+> lesson is kept verbatim — the reasoning is the point, the hostnames are not.
+>
+> | Placeholder | Means |
+> |---|---|
+> | `<vps-host>` | The VPS's address |
+> | `<deploy-user>` | The unprivileged SSH user used for deployment |
+> | `<other-app>` | A separate, unrelated production app co-hosted on the same VPS |
+>
+> No secret was ever committed to this repository: production values live only in
+> `/opt/jobcopilot/.env` on the server and in local `user-secrets`.
+
+
+
 > **Purpose:** this is the companion doc to the code itself. `HANDOVER.md` tracks *what's done and what's next* (session state). This doc explains *why the code looks the way it does* — architectural reasoning, plain-language definitions of concepts introduced, and exactly which files each step touches. Written so a fresh developer (or a fresh you, in six months) can understand the system without re-deriving every decision.
 
 Each step below follows the same structure: **Architectural Viewpoint & Arguments** (why this way, alternatives, tradeoffs), **Plain-Language Definitions** (concepts introduced), **File Mapping** (what was touched).
@@ -738,7 +754,7 @@ After all these changes, the entire local Docker Compose stack was rebuilt from 
 
 ### Architectural Viewpoint & Arguments
 
-The user's VPS already runs a separate, unrelated production project (<other-app>) behind its own Dockerized nginx (`<other-app>-nginx`). The core constraint for this step: **deploy a second, independent application alongside it without modifying anything belonging to the existing project.**
+The user's VPS already runs a separate, unrelated production project (name withheld) behind its own Dockerized nginx (`<other-app>-nginx`). The core constraint for this step: **deploy a second, independent application alongside it without modifying anything belonging to the existing project.**
 
 **Discovery before action.** Rather than guessing at the VPS's structure, an existing operations runbook for the co-hosted project (`docs/29_vps_production_operations_runbook.md`) was read first. This surfaced several facts that meaningfully simplified the plan and reduced risk, each verified live before being relied on:
 - A **wildcard DNS record** (`*.dentflowbd.com → <VPS IP>`) already existed — a new subdomain needed zero new DNS configuration.
@@ -758,7 +774,7 @@ The user's VPS already runs a separate, unrelated production project (<other-app
 
 Verification happened in stages, each one actually exercised rather than assumed from the previous:
 1. **`nginx -t` / reload** — config validity confirmed before any live traffic could be affected
-2. **Co-hosted project's own health check** (`curl https://pms.dentflowbd.com/health` → `200`) — confirmed *immediately after* the reload, to catch any regression to the existing project as early as possible, not discovered later
+2. **Co-hosted project's own health check** (`curl https://<other-app>.dentflowbd.com/health` → `200`) — confirmed *immediately after* the reload, to catch any regression to the existing project as early as possible, not discovered later
 3. **New subdomain reachability** (`curl -I https://jobcopilot.dentflowbd.com/` → `200`, correct `content-length` matching the actual built `index.html`)
 4. **Full auth + async pipeline over the real domain**: register → login → submit application → poll → `Completed` with a real Gemini-generated score and gap analysis, via `curl` from the VPS itself
 5. **Live SignalR push confirmed by the user directly, in an actual browser**, over the real domain (`wss://jobcopilot.dentflowbd.com/hubs/match`, passing through *two* layers of nginx — the co-hosted project's outer proxy, then this project's own frontend-container proxy) — the one piece Claude could not verify itself (no browser tool connected this session), and the most failure-prone piece architecturally, since WebSocket upgrade headers must be forwarded correctly at *every* proxy hop or the connection silently falls back to a degraded transport or fails outright.
@@ -872,7 +888,7 @@ restrict,command="/opt/jobcopilot/deploy.sh" ssh-ed25519 AAAA... github-actions-
 - Pipeline green: three images built and pushed, then `deploy` in 24s.
 - Deploy log shows all five containers waited on and reporting `healthy`, then `liveness: Healthy` and `readiness: Healthy` as body assertions.
 - Full application pipeline re-tested over the real public domain after deployment: register → submit → `Processing` → `Completed`, score 70 with a genuine Gemini gap analysis.
-- **Co-hosted project confirmed unaffected**: `https://pms.dentflowbd.com/health` → `200`, its three containers still at three weeks' uptime.
+- **Co-hosted project confirmed unaffected**: `https://<other-app>.dentflowbd.com/health` → `200`, its three containers still at three weeks' uptime.
 
 ### Plain-Language Definitions
 
