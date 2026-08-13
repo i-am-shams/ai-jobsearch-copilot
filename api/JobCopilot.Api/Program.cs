@@ -47,6 +47,30 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!))
         };
+
+        // SignalR's WebSocket and Server-Sent-Events transports cannot carry an
+        // Authorization header - the browser APIs behind them (WebSocket, EventSource)
+        // simply don't allow setting one. The SignalR JS client therefore passes the
+        // token as an "access_token" query parameter for those two transports only.
+        // Without reading it here, [Authorize] on MatchHub rejects both handshakes with
+        // a 401 and the client silently falls back to long polling. That still *works*,
+        // which is exactly why this went unnoticed: real-time updates arrived, just over
+        // the slowest transport after two failed handshakes and three re-negotiates.
+        // Scoped to /hubs so a query-string token is never accepted on the REST API,
+        // where it would leak into logs and browser history.
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                if (!string.IsNullOrEmpty(accessToken) &&
+                    context.HttpContext.Request.Path.StartsWithSegments("/hubs"))
+                {
+                    context.Token = accessToken;
+                }
+                return Task.CompletedTask;
+            }
+        };
     });
 
 builder.Services.AddAuthorization();

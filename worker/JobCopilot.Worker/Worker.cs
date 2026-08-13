@@ -55,7 +55,27 @@ public class Worker : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing message");
+                // Nack, don't just log. With manual ack and BasicQos(prefetch: 1),
+                // a message that is neither acked nor nacked stays outstanding forever,
+                // and RabbitMQ will not deliver the next one - a single unexpected
+                // failure here silently stops the worker consuming anything at all,
+                // permanently. It looks perfectly healthy while doing so: the process
+                // is alive and the AMQP connection is open, so even the connection-gated
+                // heartbeat below keeps reporting healthy.
+                //
+                // requeue: false is deliberate. Requeuing sends the same poison message
+                // straight back to the only consumer, which fails on it again in a tight
+                // loop. Dropping it costs one match; requeuing costs every future match.
+                // A dead-letter queue is the real answer and is listed as a known gap.
+                _logger.LogError(ex, "Error processing message - dropping it (not requeued)");
+                try
+                {
+                    _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+                }
+                catch (Exception nackEx)
+                {
+                    _logger.LogError(nackEx, "Failed to nack message");
+                }
             }
         };
 
@@ -159,15 +179,23 @@ public class Worker : BackgroundService
             app.MatchResult.GapAnalysis = gapAnalysis;
             app.MatchResult.CompletedAt = DateTime.UtcNow;
             _logger.LogInformation("Match completed for application {AppId}: score={Score}", evt.ApplicationId, score);
-            
+
             await db.SaveChangesAsync();
-            PublishCompleted(new MatchCompletedEvent(app.Id, app.UserId, score, gapAnalysis));
+            PublishCompleted(new MatchCompletedEvent(
+                app.Id, app.UserId, nameof(MatchStatus.Completed), score, gapAnalysis));
         }
         catch (Exception ex)
         {
             app.MatchResult.Status = MatchStatus.Failed;
             _logger.LogError(ex, "Failed to process match for application {AppId}", evt.ApplicationId);
             await db.SaveChangesAsync();
+
+            // Publish on failure too. Previously this path saved "Failed" and stopped,
+            // so the browser was never told: the row stayed on "Analysing" indefinitely
+            // and the only trace of the failure was in these logs. A user cannot act on
+            // a status they are never shown.
+            PublishCompleted(new MatchCompletedEvent(
+                app.Id, app.UserId, nameof(MatchStatus.Failed), null, null));
         }
     }
 

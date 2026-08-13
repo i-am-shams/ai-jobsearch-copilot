@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { apiClient } from '../api/client';
+import { toErrorMessage } from '../api/errors';
 import { useAuth } from '../context/AuthContext';
 
 export function LoginForm() {
@@ -18,8 +19,8 @@ export function LoginForm() {
     try {
       const res = await apiClient.post(endpoint, { email, password });
       login(res.data.token, res.data.email);
-    } catch (err: any) {
-      setError(err.response?.data ?? 'Something went wrong.');
+    } catch (err: unknown) {
+      setError(toErrorMessage(err, 'Something went wrong.'));
     }
   }
 
@@ -41,7 +42,7 @@ export function LoginForm() {
         required
         minLength={8}
       />
-      {error && <p style={{ color: 'red' }}>{String(error)}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
       <button type="submit">{isRegister ? 'Register' : 'Login'}</button>
       <button type="button" onClick={() => setIsRegister(!isRegister)}>
         {isRegister ? 'Have an account? Login' : 'Need an account? Register'}

@@ -51,7 +51,21 @@ public class MatchCompletedConsumer : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing MatchCompletedEvent");
+                // Nack rather than leaving the delivery outstanding forever - see the
+                // equivalent handler in the worker for the full reasoning. No prefetch
+                // limit is set on this channel, so an unacked message here stalls
+                // nothing, but it does leak an unacked delivery that is only ever
+                // released on reconnect. requeue: false for the same poison-message
+                // reason as the worker.
+                _logger.LogError(ex, "Error processing MatchCompletedEvent - dropping it (not requeued)");
+                try
+                {
+                    _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+                }
+                catch (Exception nackEx)
+                {
+                    _logger.LogError(nackEx, "Failed to nack MatchCompletedEvent");
+                }
             }
         };
         _channel.BasicConsume("match-completed", autoAck: false, consumer);
@@ -84,7 +98,7 @@ public class MatchCompletedConsumer : BackgroundService
     private async Task NotifyUser(MatchCompletedEvent evt)
     {
         await _hub.Clients.Group(evt.UserId.ToString())
-            .SendAsync("MatchCompleted", new { evt.ApplicationId, evt.MatchScore, evt.GapAnalysis });
+            .SendAsync("MatchCompleted", new { evt.ApplicationId, evt.Status, evt.MatchScore, evt.GapAnalysis });
     }
 
     public override void Dispose()

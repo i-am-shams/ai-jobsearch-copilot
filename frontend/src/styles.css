@@ -162,3 +162,53 @@
     animation: none;
   }
 }
+
+/* --- Form and load errors -------------------------------------------------
+   Replaces inline style={{ color: 'red' }}. role="alert" is on the element
+   itself so a screen reader announces the failure rather than leaving it as
+   silently-appearing text. */
+.form-error {
+  color: var(--status-failed);
+  background: var(--status-failed-bg);
+  border: 1px solid var(--status-failed);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+/* --- Live-connection indicator --------------------------------------------
+   The app's headline feature is that results arrive without a refresh. When
+   that silently stops working the UI is otherwise indistinguishable from an
+   app where nothing has happened yet, so the state is shown explicitly. */
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  margin-left: 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.live__dot {
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.live--live { color: var(--status-done); }
+.live--connecting,
+.live--reconnecting { color: var(--status-active); }
+.live--offline { color: var(--status-failed); }
+
+.live--connecting .live__dot,
+.live--reconnecting .live__dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live--connecting .live__dot,
+  .live--reconnecting .live__dot { animation: none; }
+}

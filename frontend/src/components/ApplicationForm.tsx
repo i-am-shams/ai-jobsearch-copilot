@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { apiClient } from '../api/client';
+import { toErrorMessage } from '../api/errors';
 import type { CreateApplicationRequest } from '../types/application';
 
 interface Props {
@@ -25,8 +26,8 @@ export function ApplicationForm({ onCreated }: Props) {
       await apiClient.post('/applications', form);
       setForm({ jobTitle: '', companyName: '', resumeText: '', jobDescriptionText: '' });
       onCreated();
-    } catch (err: any) {
-      setError(err.response?.data ?? 'Failed to create application.');
+    } catch (err: unknown) {
+      setError(toErrorMessage(err, 'Failed to create application.'));
     } finally {
       setSubmitting(false);
     }
@@ -61,7 +62,7 @@ export function ApplicationForm({ onCreated }: Props) {
         rows={6}
         required
       />
-      {error && <p style={{ color: 'red' }}>{String(error)}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
       <button type="submit" disabled={submitting}>
         {submitting ? 'Submitting...' : 'Submit'}
       </button>
