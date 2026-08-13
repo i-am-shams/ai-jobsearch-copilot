@@ -1,6 +1,7 @@
 # AI Job-Search Copilot — Project Handover / State Doc
 
-> **Placeholders in this document.** This repository is public. Anything that
+> **Placeholders in this document.** This repository is written to be publishable
+> (publication itself is currently paused - see the interlude notes). Anything that
 > identifies the specific server or the unrelated production app that shares it
 > has been replaced with a placeholder, while every architectural decision and
 > lesson is kept verbatim — the reasoning is the point, the hostnames are not.
@@ -18,9 +19,9 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Steps 34–36 complete — health checks, **automated deploy on push to `master`** (verified green end-to-end), and the final README + architecture diagram + tradeoffs writeup. **Project 1's roadmap steps are done.** Now in a deliberate polish-and-publish interlude before Project 2: finish the frontend modernisation, audit for more bugs of the `gapAnalysis` class, sanitize docs and make the repo public, and refresh the portfolio site. See **"Next Step — an interlude before Project 2"** below.
+**Last updated:** Polish-and-publish interlude — **A, B and D complete.** Frontend verified in a real browser then modernised (TanStack Query, react-hook-form + zod, routing + detail page, **21 first-ever frontend tests**, error boundary/toasts/a11y). A bug audit found and fixed **seven** more silent failures of the `gapAnalysis` class — including SignalR silently degraded to long polling, and a single exception able to stop the worker permanently while reporting healthy. Docs sanitized; **publication paused by decision** (history still holds the address/username). Portfolio has a new Engineering Deep Dive section. **Outstanding: the uptime monitor (needs an account).** See **"Polish-and-publish interlude — status"**.
 
-> ⚠️ **Uncommitted-to-remote work exists.** Commit `1dc0dad` (frontend gap-analysis rendering + live status) is committed locally but **deliberately not pushed** — pushing auto-deploys to production and the UI hasn't been confirmed in a browser yet. Verify, then push.
+> ✅ **Everything is pushed and deployed.** `master` and `origin/master` match, and CI/CD was green on every push this session. The repo is **still private** — see interlude item C.
 
 ## 🚀 LIVE DEPLOYMENT
 
@@ -282,12 +283,23 @@ ai-jobsearch-copilot/
 │   ├── context/AuthContext.tsx   → in-memory token/email state, login()/logout()
 │   ├── types/application.ts      → ApplicationResponse (+ gapAnalysis), CreateApplicationRequest
 │   ├── signalr.ts                → SignalR connection factory (JWT via accessTokenFactory)
+│   ├── api/
+│   │   ├── client.ts             → axios instance, setAuthToken()
+│   │   ├── applications.ts       → TanStack Query hooks + applyMatchPush (cache patching)
+│   │   └── errors.ts             → toErrorMessage: the 429/ProblemDetails/network fix
+│   ├── lib/schemas.ts            → zod schemas; response types are INFERRED from these
+│   ├── hooks/useLiveMatchUpdates.ts → SignalR → query cache, returns connection status
+│   ├── routes/                   → Dashboard, ApplicationDetail, ProtectedRoute
 │   ├── components/
-│   │   ├── LoginForm.tsx         → login+register toggle form
-│   │   ├── ApplicationForm.tsx   → submit new resume+JD pairing
-│   │   └── ApplicationList.tsx   → table of tracked applications
-│   ├── App.tsx                   → owns applications state, coordinates form+list, auth-gated render
-│   └── main.tsx                  → wraps <App/> in <AuthProvider>
+│   │   ├── LoginForm.tsx         → react-hook-form + zod
+│   │   ├── ApplicationForm.tsx   → react-hook-form + zod, uses the create mutation
+│   │   ├── ApplicationList.tsx   → table + gap-analysis disclosure + detail links
+│   │   ├── StatusPill.tsx / AnimatedScore.tsx / LiveIndicator.tsx
+│   │   ├── ErrorBoundary.tsx     → render exceptions can't blank the page silently
+│   │   └── Toaster.tsx           → aria-live region for pushed results
+│   ├── test/                     → Vitest setup + render helpers
+│   ├── App.tsx                   → router shell, owns the SignalR connection
+│   └── main.tsx                  → ErrorBoundary > QueryClient > Auth > Toast > Router
 ├── docs/
 │   ├── HANDOVER.md               → this file
 │   └── ARCHITECTURE_CONCEPTS.md  → per-step architectural reasoning + concept glossary
@@ -361,47 +373,129 @@ ai-jobsearch-copilot/
     - Diagram is Mermaid (renders natively on GitHub, diffable) **plus** a committed `docs/architecture.png` rendered via `@mermaid-js/mermaid-cli`, with `docs/architecture.mmd` as the extracted source. The PNG is *linked*, not embedded inline — GitHub renders the Mermaid block itself, so embedding both would show the diagram twice on the page.
     - Cleanup done: deleted `docs/STEP_21_VERIFICATION.md` (the self-generated file whose own "how to verify" section was an unperformed to-do list).
 
-## Next Step — an interlude before Project 2
+## Polish-and-publish interlude — status
 
-Project 1's roadmap steps are done, but a **polish-and-publish interlude was agreed before moving on**, prompted by an honest look at the frontend. Do these in order; the roadmap's Project 2 comes *after*.
+Project 1's roadmap steps (1–36) are complete. This interlude was agreed before starting
+Project 2. **A, B and D are done; C is deliberately paused; E is blocked on credentials.**
 
-### A. Frontend: finish what's started, then modernise
+### A. Frontend verified, then modernised — done
 
-**Committed locally but NOT pushed, and NOT yet verified in a browser** (commit `1dc0dad`). Pushing auto-deploys to production, so verify first, then push.
-- Renders `gapAnalysis` via expandable disclosure rows; status shown as a coloured pill (`Pending`→"Queued", `Processing`→"Analysing"); score counts up when a live SignalR result lands; deleted the never-imported Vite template `App.css`.
-- **To verify**: local stack up, log in as `demo@local.test` / `DemoTest123!` (seeded, has one completed application), expand a row, then submit a new one and watch the status transition live without refreshing.
+**Verified first, in a real browser** (Playwright driving actual Edge, since no browser tool
+was connected this session): logged in as the seeded demo user, expanded the gap analysis,
+submitted a new application and watched it go `Queued -> Completed` with **zero page
+navigations** and the score counting up (`— -> 18 -> 35`). Then pushed; CD green.
 
-**Then the remaining modernisation**, in the priority order agreed:
-3. **TanStack Query** — replaces the current refetch-everything-on-any-event pattern with caching, background refresh, real loading/error states. The most recognisable "modern React" signal.
-4. **react-hook-form + zod** — real validation and shared schema types. Note `react-router-dom` is currently **installed but never imported** — either use it (below) or drop it.
-5. **Routing + a detail page** — `/`, `/applications/:id`, protected routes.
-6. **Vitest + React Testing Library** — currently **zero** frontend tests, so CI's frontend stage only type-checks and builds.
-7. **Error boundary, toasts, empty/error states, aria labels, keyboard navigation.** Currently 2 `catch` blocks and 2 `aria-` attributes in the whole app.
+**Then modernised:**
+- **TanStack Query** replaces refetch-everything-on-any-event. Pushes now patch the one row
+  that changed. Measured in a browser: a submit-to-completed cycle costs **one** API call
+  (the POST) and nothing else.
+- **react-hook-form + zod.** Schemas are the single source of truth — response types are
+  *inferred* from them, and responses are **parsed at runtime**, so a field silently
+  disappearing from the API fails loudly instead of rendering blanks forever.
+- **Routing + a detail page.** Also the first-ever caller of `GET /api/applications/{id}`,
+  which had been implemented and user-scoped since Step 13 with **no consumer at all**.
+  `react-router-dom` was already a dependency and had never been imported.
+- **Vitest + React Testing Library — 21 tests**, the frontend's first. CI's frontend job now
+  *runs* them instead of only type-checking and building. **Mutation-checked**: reverting the
+  gapAnalysis render makes two of them fail.
+- **Error boundary, toasts in an `aria-live` region, labelled fields with `aria-invalid` and
+  `aria-describedby`, visible focus rings, invalid state marked by border weight as well as
+  colour, and a live-connection indicator.**
 
-### B. Hunt for more bugs of the same class
+### B. Bug audit — seven silent failures found and fixed
 
-The `gapAnalysis` bug — data generated, stored, returned by the API, and silently never rendered — was found by reading the code, not by any test or build. **Assume there are others.** Worth auditing specifically: every field on `ApplicationResponse` actually reaching the UI; error paths that swallow or misreport failures; the known "failed matches never push a SignalR update" gap; and whether anything else in the repo is dead or unused like `App.css` and `react-router-dom` were.
+All the same class as `gapAnalysis`: **no test or build could have caught any of them.**
 
-### C. Make this repo public
+1. **SignalR was silently running on its slowest transport.** WebSockets and SSE cannot send
+   an `Authorization` header, so the SignalR client passes the token as an `access_token`
+   query parameter — which nothing read. Both transports 401'd on handshake and the client
+   fell back to long polling. *It worked*, which is exactly why nobody noticed. Now read,
+   **scoped to `/hubs`** so a query-string token is never accepted on the REST API, where it
+   would leak into logs. Verified by tracing transports: negotiate 200, WebSocket first try.
+2. **Failed matches never told the browser anything.** Publishing on success only meant a
+   failure saved `Failed` and stopped; the row sat on "Analysing" until a manual refresh.
+   Verified by running the worker against an invalid Gemini key: `Queued -> Failed` live,
+   zero page navigations.
+3. **A single unexpected exception could stop the worker permanently.** The consumer caught,
+   logged, and then neither acked nor nacked. With manual ack and prefetch 1 that delivery
+   stays outstanding forever and RabbitMQ never delivers another — **and it looks perfectly
+   healthy while doing it**, because the process is alive and the AMQP connection is open, so
+   even the connection-gated heartbeat keeps passing. Now nacks with `requeue: false`
+   (requeuing a poison message just feeds it straight back to the only consumer in a loop).
+   A dead-letter queue is the real answer and is listed as a gap, not pretended away.
+4. **`MatchResult.CompletedAt` was stamped by the worker and returned by nothing** —
+   generated-then-dropped, exactly like the gap analysis. Now on `ApplicationResponse`; with
+   `CreatedAt` it gives the pipeline's real turnaround time.
+5. **Hitting the rate limit showed the user nothing at all.** `err.response?.data ?? fallback`
+   plus ASP.NET's empty 429 body: `''` is not null, so `??` passed it through, and
+   `{error && <p/>}` renders nothing for `''`. Submitting past the limit was
+   indistinguishable from a dead button. The same expression rendered ProblemDetails objects
+   as `[object Object]` and reported network failures as server errors.
+6. **Live updates could die without a trace** — `connection.start()`'s promise was ignored, so
+   a failed handshake was an unhandled rejection and the app looked completely normal.
+7. **The push carried no `completedAt`**, so a finished match kept a null timestamp and the
+   detail view showed no analysis time and no turnaround at all. Found *during* the
+   modernisation. The first fix attempt (an `invalidate`) **silently did nothing** — the
+   detail query seeds from the list cache and so considered itself fresh on mount. Real fix:
+   the event carries the complete terminal state. The worker now also stamps `CompletedAt` on
+   failure, which it never did.
 
-Decision taken: **sanitize the docs first, then publish** (no history rewrite).
-- **Git history is already clean of real secrets** — verified: no Gemini keys, no private keys, no tokens. Only `devpassword` and a self-labelled throwaway JWT key.
-- **What must be sanitized before publishing** — `docs/HANDOVER.md` and `docs/ARCHITECTURE_CONCEPTS.md` currently contain the **VPS IP, the SSH username (`deploy`), exact server paths, the Docker network name, the full nginx config, and the co-hosted production app's details**. The IP is DNS-discoverable from the live domain anyway, but the SSH username, directory layout and "this box also runs another production app" are not. Replace with placeholders; **keep every architectural lesson**, since the reasoning is the portfolio value.
-- Then `gh repo edit i-am-shams/ai-jobsearch-copilot --visibility public`, and pin it on the GitHub profile (pinning is a profile setting, done in the web UI).
+Also removed four unreferenced Vite template assets (`hero.png`, `react.svg`, `vite.svg`,
+`icons.svg`) — the same dead weight as the `App.css` deleted the session before.
 
-### D. Review and update the portfolio site
+**Still open, named honestly:** `Analysing` is written to the database, but nothing pushes on
+`Pending -> Processing`, so **the UI renders a state it can never actually reach.**
 
-`my-portfolio` — **already PUBLIC**, JavaScript, cloned locally at `C:\Users\Khalid\Documents\GitHub\my-portfolio`, last updated 2026-08-10. Review it and add/refresh the entry for this project: live URL, the architecture diagram, and a link to the (by then public) repo. Not yet examined at all — assess its current state first.
+### C. Docs sanitized — publication deliberately paused
 
-### E. Still outstanding from Step 34
+Sanitization is **done and pushed**: the VPS address, the SSH username, the co-hosted app's
+name, its nginx container and network names, its config filename and its own health-check
+subdomain are all placeholders now, with a legend at the top of both docs. Every
+architectural lesson is intact and reads as before.
 
-- **Register an external uptime monitor** against `https://jobcopilot.dentflowbd.com/health` (UptimeRobot — free, no card). **Match the response body keyword `Healthy`, not just a 200 status** — the SPA fallback returns 200 with `index.html` for any unmatched path, so a status-only monitor is decorative (see Step 35, bug 1).
+**Publication is on hold by explicit decision.** Sanitizing the working tree does **not**
+remove the address and username from git history — both remain recoverable via `git log -S`
+on the two commits that introduced them. Re-verified while doing this: history contains **no
+API keys, no private keys and no tokens**. Resuming means either accepting that (the address
+is DNS-discoverable from the live domain anyway) or rewriting history first.
+`gh repo edit --visibility public` has **not** been run. The repo is still private.
+
+### D. Portfolio updated — done
+
+`my-portfolio` is Next.js (pages router) + Tailwind with existing Playwright smoke tests,
+live at `https://khalid-shams.vercel.app`. It had **no projects section of its own kind at
+all** — strong enterprise positioning, but every claim was an outcome the reader had to take
+on trust.
+
+Added an **"Engineering Deep Dive"** section (`data/buildProjects.js`,
+`components/BuildProject.js`) between the flagship case study and the enterprise list: the
+architecture diagram, request flow, stack, the engineering decisions *and why*, plus a
+**Known gaps** list. New hero CTA, "See a System I Built". Project data is structured so
+further builds are additive; **`repoUrl` is `null` and the Source link is conditional — set
+that one field once this repo goes public.** Two new smoke tests, including asserting the
+diagram actually renders (`naturalWidth > 0`) rather than merely that the file is referenced.
+All 7 pass, production build clean, pushed.
+
+### E. Uptime monitor — blocked, needs an account
+
+Not registered: UptimeRobot needs credentials this session did not have.
+
+**The monitor's semantics were verified against production, so the setup is exactly right:**
+
+| URL | Result |
+|---|---|
+| `https://jobcopilot.dentflowbd.com/health` | `200`, **7 bytes**, body is exactly `Healthy` |
+| `https://jobcopilot.dentflowbd.com/health-typo` | **also `200`**, 458 bytes of `index.html`, **no `Healthy` anywhere** |
+
+That second row is the whole argument: **a status-only monitor would report UP on a
+completely broken deployment.** The monitor must be **keyword type, matching `Healthy`,
+alerting when the keyword is *not* found** — see Step 35, bug 1, which is the same trap.
 
 ### Then: Project 2
 
-`docs/Full_Stack_Developer_Transition_Roadmap.md` → **break a slice into microservices + cloud-native deploy**, plus the interview-preparation track.
+`docs/Full_Stack_Developer_Transition_Roadmap.md` -> break a slice into microservices +
+cloud-native deploy, plus the interview-preparation track.
 
-> **Tooling constraint for whoever picks this up:** in the current Claude Code environment, `ssh` is blocked by the harness permission classifier and `gh` is not installed, so VPS and GitHub-secret work is guided manual execution (Claude writes exact commands, user runs them, pastes results back) — same as Step 33, for a different underlying reason.
 
 ## Known Gotchas
 
@@ -410,7 +504,11 @@ Decision taken: **sanitize the docs first, then publish** (no history rewrite).
 ## Future Additions (deliberately deferred, don't lose track)
 
 - **Node.js polyglot piece**: a small Node.js service consuming `MatchCompletedEvent` (e.g., logs/webhooks on match completion) — planned as an *additive*, low-risk demonstration of polyglot architecture. Unblocked since Step 22, not yet started.
-- **Failed matches don't push a live SignalR update** — only success does. Known limitation from Step 22, not yet fixed.
+- ~~Failed matches don't push a live SignalR update~~ — **done** in the interlude's bug audit, verified live against an invalid Gemini key.
+- **`Analysing` is unreachable in the UI.** `Processing` is written to the database, but nothing pushes on `Pending -> Processing`, so the status pill can render a state the user can never actually see. Needs either a third event or a status-change push.
+- **No dead-letter queue.** Poison messages are now nacked with `requeue: false`, which drops them rather than stalling the worker — correct, but the message is gone. A DLQ is the real fix.
+- **Publication of this repo is paused** — see interlude item C for the history question.
+- **Portfolio `repoUrl` is `null`** in `my-portfolio/data/buildProjects.js`; set it to surface the Source link once this repo is public.
 - ~~Prompt-injection hardening~~ — **done, Step 30.**
 - ~~Diagnostic logging cleanup in `Worker.cs`~~ — **done, Step 31.**
 - ~~RabbitMQ connection retry-with-backoff~~ — **done, Step 31, live-tested against a real outage.**

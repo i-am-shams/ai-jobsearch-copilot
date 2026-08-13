@@ -1,6 +1,7 @@
 # Architecture & Concepts — Onboarding Document
 
-> **Placeholders in this document.** This repository is public. Anything that
+> **Placeholders in this document.** This repository is written to be publishable
+> (publication itself is currently paused - see the interlude notes). Anything that
 > identifies the specific server or the unrelated production app that shares it
 > has been replaced with a placeholder, while every architectural decision and
 > lesson is kept verbatim — the reasoning is the point, the hostnames are not.
@@ -909,3 +910,137 @@ restrict,command="/opt/jobcopilot/deploy.sh" ssh-ed25519 AAAA... github-actions-
 ### Known gap, named honestly
 
 Deployment targets the `:latest` tag, not the commit SHA. Images *are* tagged with both, so the artifacts for a precise rollback exist — but the deploy script always pulls `latest`, so rolling back means manually editing the VPS compose file. Pinning the deploy to a SHA would need the deploy key to accept an argument, which cuts against the forced-command hardening that makes this key safe to hold. Doing it properly (validating the argument against `^[0-9a-f]{40}$` inside the forced command, via `SSH_ORIGINAL_COMMAND`) is a genuine improvement and is listed as a Future Addition rather than quietly skipped.
+
+---
+
+## Interlude — The Bug Audit and the Frontend Modernisation
+
+### Architectural Viewpoint & Arguments
+
+**The bug class this whole interlude is organised around.** The previous session found that
+`gapAnalysis` — the AI output the entire pipeline exists to produce — was generated, stored,
+returned by the API, and rendered by nothing. Every test passed. Every build was clean. The
+types were correct. The data was in the response. It was found by *reading the code*.
+
+That is worth naming precisely, because it is not "a bug we missed". It is a **category of
+defect that the project's entire verification apparatus was structurally incapable of
+detecting**: a break in the chain *between* two correct components, where nothing throws and
+nothing is red. The audit assumed there were more. There were seven.
+
+**Why "it works" is the most dangerous signal in the set.** The most instructive finding was
+the SignalR transport bug. `MatchHub` is `[Authorize]`. WebSockets and Server-Sent Events
+physically cannot carry an `Authorization` header — the browser APIs behind them do not permit
+one — so the SignalR client passes the token as an `access_token` query parameter instead.
+Nothing on the server read it. Both transports 401'd at handshake, and the client **silently
+fell back to long polling**.
+
+The feature worked. Live updates arrived. A user would never complain. It had been shipped,
+demoed, and verified in a real browser by a human. What was actually happening was two failed
+handshakes and a renegotiation on every page load, and the system's headline capability
+running on its slowest available transport. **A graceful degradation path is a place where
+bugs go to hide**, precisely because the symptom is absence-of-optimality rather than failure.
+Finding it required looking at the network transport, not at the behaviour.
+
+**Health signals can be confidently wrong.** The worst finding by blast radius: the worker's
+message handler caught exceptions, logged them, and then neither acked nor nacked. With manual
+acknowledgement and `BasicQos(prefetch: 1)`, an unacknowledged delivery stays outstanding
+forever, and RabbitMQ will not deliver another message on that channel. **One unexpected
+exception stops the worker consuming anything, permanently.**
+
+What makes this architecturally interesting is that the Step 34 heartbeat — deliberately gated
+on the AMQP connection being open, specifically to catch "process alive but consuming nothing"
+— **would have kept reporting healthy through it**. The connection *is* open. The process *is*
+alive. The check was well-designed for the failure mode it was designed for, and blind to this
+one. The lesson is not "the healthcheck was bad"; it is that **a liveness signal is only ever
+a proxy, and every proxy has a shape of failure it cannot see.**
+
+The fix nacks with `requeue: false`. Requeuing feels safer and is worse: the poison message
+returns to the only consumer, fails again, and loops. **Dropping one match is a bounded cost;
+requeuing it is an unbounded one.** A dead-letter queue is the correct answer and is recorded
+as a gap rather than quietly skipped.
+
+**Runtime parsing versus compile-time typing.** The frontend previously described API responses
+with hand-written TypeScript interfaces. An interface is a *promise about data the compiler has
+never seen*: if the API stops returning a field, every build still passes and the UI renders
+blanks indefinitely — which is, exactly, the original bug. Zod schemas are now the single source
+of truth, with the types **inferred** from them and responses **parsed** at the boundary. This
+trades a runtime cost and a possible loud failure for the guarantee that a contract break cannot
+be silent. Given this project's demonstrated failure mode, that is the correct trade.
+
+**Push payloads must carry complete state.** Replacing refetch-everything with cache patching
+immediately produced a new instance of the same bug: the push carried no `completedAt`, so a
+finished match kept a null timestamp and the detail view showed no analysis time and no
+turnaround. The first fix — invalidating the detail query — **silently did nothing**, because
+that query seeds from the list cache and therefore considered itself fresh on mount. Two
+reasonable mechanisms composed into a third silent failure.
+
+The real fix is the principle: **an event that announces a terminal state must carry everything
+a consumer needs to be correct about that state.** A refetch to fill in a gap is not a fix, it
+is a compensation for an incomplete event — and compensations can fail quietly, as this one did.
+
+**Where "modern frontend" is load-bearing rather than decorative.** TanStack Query is not here
+as a fashion signal. The old code refetched every application on every push, discarding a
+payload the server had just sent. The new code patches one row: a submit-to-completed cycle
+measurably costs **one** API call. The event-driven backend was already doing the hard part;
+the frontend was throwing the result away and asking again.
+
+### Plain-Language Definitions
+
+- **Silent failure** — a defect where no exception is raised, no test fails and no log line is
+  written, because every component behaved correctly and only the *connection between them* is
+  wrong. Detectable by inspection or by end-to-end assertion, not by unit tests.
+- **Graceful degradation** — a fallback to a lesser mode when the preferred one fails
+  (WebSocket -> Server-Sent Events -> long polling). Valuable for resilience; hazardous for
+  diagnosis, because it converts a hard failure into a quiet one.
+- **Manual acknowledgement / prefetch** — the consumer tells the broker explicitly when a
+  message is handled, and the broker will only have N unacknowledged messages outstanding at
+  once. With N = 1, forgetting to acknowledge stops delivery entirely.
+- **Nack with `requeue: false`** — explicitly reject a message and do *not* return it to the
+  queue. Prevents a poison message from looping forever through the only consumer.
+- **Dead-letter queue (DLQ)** — a separate queue that rejected messages are routed to, so they
+  are inspectable rather than discarded. The proper destination for the messages now dropped.
+- **Schema-first typing** — deriving static types from a runtime validator (zod) rather than
+  declaring them separately, so the validation and the type cannot drift apart.
+- **Error boundary** — a React component that catches render-time exceptions in its subtree.
+  Without one, an uncaught render error unmounts the whole application and yields a white page.
+- **`aria-live` region** — a container whose content changes are announced by screen readers
+  without moving focus. Necessary for anything appearing without a user action, like a result
+  arriving over a push.
+- **Mutation testing** — deliberately breaking the code to confirm a test fails. The cheapest
+  defence against tests that assert nothing (compare Step 35's smoke test, which passed against
+  a deployment where the endpoint did not exist).
+
+### File Mapping
+
+**Backend fixes**
+- `api/JobCopilot.Api/Program.cs` — `OnMessageReceived` reads `access_token` from the query
+  string, scoped to `/hubs` so a URL-borne token is never accepted on the REST API.
+- `api/JobCopilot.Contracts/Messaging/MatchCompletedEvent.cs` — now carries `Status`, nullable
+  `MatchScore`/`GapAnalysis`, and `CompletedAt`: the complete terminal state.
+- `worker/JobCopilot.Worker/Worker.cs` — publishes on failure as well as success; stamps
+  `CompletedAt` on both paths; nacks with `requeue: false` instead of leaving deliveries
+  outstanding.
+- `api/JobCopilot.Api/Messaging/MatchCompletedConsumer.cs` — same nack fix; forwards the new
+  fields to the hub.
+- `api/JobCopilot.Api/Controllers/ApplicationsController.cs` — `CompletedAt` on
+  `ApplicationResponse`, wired through all three endpoints.
+
+**Frontend**
+- `frontend/src/lib/schemas.ts` — zod schemas; all response types inferred from here.
+- `frontend/src/api/applications.ts` — query/mutation hooks and `applyMatchPush` (cache
+  patching, and the comment explaining why no refetch follows it).
+- `frontend/src/api/errors.ts` — `toErrorMessage`: the empty-429, ProblemDetails and
+  network-failure fixes in one place.
+- `frontend/src/hooks/useLiveMatchUpdates.ts` — SignalR to cache, and connection state as a
+  first-class returned value.
+- `frontend/src/routes/` — `Dashboard`, `ApplicationDetail` (first caller of
+  `GET /api/applications/{id}`), `ProtectedRoute`.
+- `frontend/src/components/ErrorBoundary.tsx`, `Toaster.tsx`, `LiveIndicator.tsx` — new.
+- `frontend/src/**/*.test.ts(x)`, `frontend/src/test/` — 21 tests; the top case asserts the gap
+  analysis text reaches the DOM.
+- `.github/workflows/ci.yml` — the frontend job now runs tests, not just a type-check and build.
+
+**Docs and portfolio**
+- `docs/HANDOVER.md`, `docs/ARCHITECTURE_CONCEPTS.md` — sanitized with a placeholder legend.
+- `my-portfolio/data/buildProjects.js`, `my-portfolio/components/BuildProject.js` — the
+  Engineering Deep Dive section.
