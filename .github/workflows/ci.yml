@@ -38,3 +38,9 @@ jobs:
       - name: Type check and build
         run: npm run build
         working-directory: frontend
+      # Until now this job only type-checked and built, so the "frontend" stage
+      # could not fail on behaviour - which is exactly how a component that never
+      # rendered its own data passed CI indefinitely.
+      - name: Test
+        run: npm run test
+        working-directory: frontend

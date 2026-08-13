@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { ApplicationResponse } from '../types/application';
 import { StatusPill } from './StatusPill';
 import { AnimatedScore } from './AnimatedScore';
@@ -54,6 +55,7 @@ export function ApplicationList({ applications, loading }: Props) {
           <th scope="col">Status</th>
           <th scope="col" className="numeric">Score</th>
           <th scope="col">Submitted</th>
+          <th scope="col"><span className="sr-only">Details</span></th>
         </tr>
       </thead>
       <tbody>
@@ -97,11 +99,19 @@ export function ApplicationList({ applications, loading }: Props) {
                   )}
                 </td>
                 <td>{new Date(app.createdAt).toLocaleDateString()}</td>
+                <td>
+                  {/* The row expands inline for a quick look; this goes to the
+                      full record, including the pipeline turnaround time that
+                      the table has no room for. */}
+                  <Link to={`/applications/${app.id}`} aria-label={`View details for ${app.jobTitle}`}>
+                    Details
+                  </Link>
+                </td>
               </tr>
 
               {isExpanded && hasAnalysis && (
                 <tr id={`analysis-${app.id}`} className="analysis">
-                  <td colSpan={5}>
+                  <td colSpan={6}>
                     <h4>Gap analysis</h4>
                     <p>{app.gapAnalysis}</p>
                   </td>

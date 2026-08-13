@@ -1,70 +1,104 @@
-import { useState, type FormEvent } from 'react';
-import { apiClient } from '../api/client';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useCreateApplication } from '../api/applications';
 import { toErrorMessage } from '../api/errors';
-import type { CreateApplicationRequest } from '../types/application';
+import { createApplicationSchema, type CreateApplicationRequest } from '../lib/schemas';
+import { useToast } from './Toaster';
 
-interface Props {
-  onCreated: () => void; // tells parent to refresh the list
-}
+export function ApplicationForm() {
+  const createApplication = useCreateApplication();
+  const { toast } = useToast();
 
-export function ApplicationForm({ onCreated }: Props) {
-  const [form, setForm] = useState<CreateApplicationRequest>({
-    jobTitle: '',
-    companyName: '',
-    resumeText: '',
-    jobDescriptionText: '',
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors },
+  } = useForm<CreateApplicationRequest>({
+    resolver: zodResolver(createApplicationSchema),
+    mode: 'onBlur',
+    defaultValues: { jobTitle: '', companyName: '', resumeText: '', jobDescriptionText: '' },
   });
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-
+  async function onSubmit(values: CreateApplicationRequest) {
     try {
-      await apiClient.post('/applications', form);
-      setForm({ jobTitle: '', companyName: '', resumeText: '', jobDescriptionText: '' });
-      onCreated();
-    } catch (err: unknown) {
-      setError(toErrorMessage(err, 'Failed to create application.'));
-    } finally {
-      setSubmitting(false);
+      await createApplication.mutateAsync(values);
+      reset();
+      toast('Submitted — analysing the match now.', 'info');
+    } catch {
+      // Rendered below from the mutation's own error state; the toast would be
+      // redundant for a failure the user is looking straight at.
     }
   }
 
   return (
-    <form onSubmit={handleSubmit}>
+    <form onSubmit={handleSubmit(onSubmit)} noValidate className="card">
       <h3>Track a New Application</h3>
-      <input
-        placeholder="Job Title"
-        value={form.jobTitle}
-        onChange={(e) => setForm({ ...form, jobTitle: e.target.value })}
-        required
-      />
-      <input
-        placeholder="Company Name"
-        value={form.companyName}
-        onChange={(e) => setForm({ ...form, companyName: e.target.value })}
-        required
-      />
-      <textarea
-        placeholder="Paste resume text"
-        value={form.resumeText}
-        onChange={(e) => setForm({ ...form, resumeText: e.target.value })}
-        rows={6}
-        required
-      />
-      <textarea
-        placeholder="Paste job description"
-        value={form.jobDescriptionText}
-        onChange={(e) => setForm({ ...form, jobDescriptionText: e.target.value })}
-        rows={6}
-        required
-      />
-      {error && <p className="form-error" role="alert">{error}</p>}
-      <button type="submit" disabled={submitting}>
-        {submitting ? 'Submitting...' : 'Submit'}
+
+      <div className="field">
+        <label htmlFor="jobTitle">Job title</label>
+        <input
+          id="jobTitle"
+          aria-invalid={Boolean(errors.jobTitle)}
+          aria-describedby={errors.jobTitle ? 'jobTitle-error' : undefined}
+          {...register('jobTitle')}
+        />
+        {errors.jobTitle && (
+          <p className="field__error" id="jobTitle-error" role="alert">{errors.jobTitle.message}</p>
+        )}
+      </div>
+
+      <div className="field">
+        <label htmlFor="companyName">Company name</label>
+        <input
+          id="companyName"
+          aria-invalid={Boolean(errors.companyName)}
+          aria-describedby={errors.companyName ? 'companyName-error' : undefined}
+          {...register('companyName')}
+        />
+        {errors.companyName && (
+          <p className="field__error" id="companyName-error" role="alert">{errors.companyName.message}</p>
+        )}
+      </div>
+
+      <div className="field">
+        <label htmlFor="resumeText">Your resume</label>
+        <textarea
+          id="resumeText"
+          rows={6}
+          aria-invalid={Boolean(errors.resumeText)}
+          aria-describedby={errors.resumeText ? 'resumeText-error' : undefined}
+          {...register('resumeText')}
+        />
+        {errors.resumeText && (
+          <p className="field__error" id="resumeText-error" role="alert">{errors.resumeText.message}</p>
+        )}
+      </div>
+
+      <div className="field">
+        <label htmlFor="jobDescriptionText">Job description</label>
+        <textarea
+          id="jobDescriptionText"
+          rows={6}
+          aria-invalid={Boolean(errors.jobDescriptionText)}
+          aria-describedby={errors.jobDescriptionText ? 'jobDescriptionText-error' : undefined}
+          {...register('jobDescriptionText')}
+        />
+        {errors.jobDescriptionText && (
+          <p className="field__error" id="jobDescriptionText-error" role="alert">
+            {errors.jobDescriptionText.message}
+          </p>
+        )}
+      </div>
+
+      {createApplication.isError && (
+        <p className="form-error" role="alert">
+          {toErrorMessage(createApplication.error, 'Failed to create application.')}
+        </p>
+      )}
+
+      <button type="submit" disabled={createApplication.isPending}>
+        {createApplication.isPending ? 'Submitting…' : 'Submit'}
       </button>
     </form>
   );

@@ -182,11 +182,17 @@ public class Worker : BackgroundService
 
             await db.SaveChangesAsync();
             PublishCompleted(new MatchCompletedEvent(
-                app.Id, app.UserId, nameof(MatchStatus.Completed), score, gapAnalysis));
+                app.Id, app.UserId, nameof(MatchStatus.Completed), score, gapAnalysis,
+                app.MatchResult.CompletedAt));
         }
         catch (Exception ex)
         {
             app.MatchResult.Status = MatchStatus.Failed;
+            // Stamp the terminal time on failure too. It was previously set only on
+            // success, so a failed match had no record of when it stopped - and the
+            // client had no way to tell a match that failed a second ago from one
+            // that failed last week.
+            app.MatchResult.CompletedAt = DateTime.UtcNow;
             _logger.LogError(ex, "Failed to process match for application {AppId}", evt.ApplicationId);
             await db.SaveChangesAsync();
 
@@ -195,7 +201,8 @@ public class Worker : BackgroundService
             // and the only trace of the failure was in these logs. A user cannot act on
             // a status they are never shown.
             PublishCompleted(new MatchCompletedEvent(
-                app.Id, app.UserId, nameof(MatchStatus.Failed), null, null));
+                app.Id, app.UserId, nameof(MatchStatus.Failed), null, null,
+                app.MatchResult.CompletedAt));
         }
     }
 

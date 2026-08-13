@@ -98,7 +98,7 @@ public class MatchCompletedConsumer : BackgroundService
     private async Task NotifyUser(MatchCompletedEvent evt)
     {
         await _hub.Clients.Group(evt.UserId.ToString())
-            .SendAsync("MatchCompleted", new { evt.ApplicationId, evt.Status, evt.MatchScore, evt.GapAnalysis });
+            .SendAsync("MatchCompleted", new { evt.ApplicationId, evt.Status, evt.MatchScore, evt.GapAnalysis, evt.CompletedAt });
     }
 
     public override void Dispose()

@@ -7,6 +7,13 @@ namespace JobCopilot.Contracts;
 /// manually refreshed, with the failure visible only in the worker's logs.
 ///
 /// Score and analysis are nullable because a failed match genuinely has neither.
+///
+/// The event carries the complete terminal state on purpose. An earlier version
+/// omitted CompletedAt, which left the client holding a row it believed was fresh
+/// but whose timestamp was still null - so the detail view showed no analysis time
+/// and no turnaround, for a match that had demonstrably finished. Anything the
+/// client needs in order to be correct after this event belongs in this event.
+///
 /// The queue and the SignalR method are still named "match-completed"/"MatchCompleted"
 /// rather than something more accurate like "finished" - renaming the queue would
 /// strand any messages already durably sitting in the old one on a live deployment,
@@ -17,4 +24,5 @@ public record MatchCompletedEvent(
     Guid UserId,
     string Status,
     int? MatchScore,
-    string? GapAnalysis);
+    string? GapAnalysis,
+    DateTime? CompletedAt);
