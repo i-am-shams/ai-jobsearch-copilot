@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { AlertTriangle } from 'lucide-react';
 
 interface Props {
   children: ReactNode;
@@ -34,7 +35,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
     return (
       <div className="boundary" role="alert">
-        <h2>Something broke on this page</h2>
+        <h2><AlertTriangle size={18} aria-hidden="true" className="boundary__icon" /> Something went wrong</h2>
         <p>
           The error has been logged to the browser console. Reloading usually clears it.
         </p>

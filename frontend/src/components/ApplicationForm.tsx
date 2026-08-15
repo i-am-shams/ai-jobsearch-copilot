@@ -33,7 +33,7 @@ export function ApplicationForm() {
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} noValidate className="card">
-      <h3>Track a New Application</h3>
+      <h3>New application</h3>
 
       <div className="field">
         <label htmlFor="jobTitle">Job title</label>
@@ -62,7 +62,7 @@ export function ApplicationForm() {
       </div>
 
       <div className="field">
-        <label htmlFor="resumeText">Your resume</label>
+        <label htmlFor="resumeText">Resume</label>
         <textarea
           id="resumeText"
           rows={6}

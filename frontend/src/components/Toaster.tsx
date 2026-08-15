@@ -1,6 +1,13 @@
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
+import { CheckCircle2, XCircle, Info, X } from 'lucide-react';
 
 type ToastTone = 'success' | 'error' | 'info';
+
+const TONE_ICON: Record<ToastTone, typeof CheckCircle2> = {
+  success: CheckCircle2,
+  error: XCircle,
+  info: Info,
+};
 
 interface Toast {
   id: number;
@@ -47,19 +54,23 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={api}>
       {children}
       <div className="toaster" role="status" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast toast--${t.tone}`}>
-            <span>{t.message}</span>
-            <button
-              type="button"
-              className="toast__close"
-              aria-label="Dismiss notification"
-              onClick={() => dismiss(t.id)}
-            >
-              ×
-            </button>
-          </div>
-        ))}
+        {toasts.map((t) => {
+          const ToneIcon = TONE_ICON[t.tone];
+          return (
+            <div key={t.id} className={`toast toast--${t.tone}`}>
+              <ToneIcon size={16} aria-hidden="true" className="toast__icon" />
+              <span>{t.message}</span>
+              <button
+                type="button"
+                className="toast__close"
+                aria-label="Dismiss notification"
+                onClick={() => dismiss(t.id)}
+              >
+                <X size={14} aria-hidden="true" />
+              </button>
+            </div>
+          );
+        })}
       </div>
     </ToastContext.Provider>
   );

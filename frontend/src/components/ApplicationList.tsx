@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { ChevronRight, ChevronDown, ArrowRight } from 'lucide-react';
 import type { ApplicationResponse } from '../types/application';
 import { StatusPill } from './StatusPill';
 import { AnimatedScore } from './AnimatedScore';
@@ -77,7 +78,7 @@ export function ApplicationList({ applications, loading }: Props) {
                       onClick={() => setExpandedId(isExpanded ? null : app.id)}
                     >
                       <span className="disclosure__marker" aria-hidden="true">
-                        {isExpanded ? '▾' : '▸'}
+                        {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       </span>
                       {app.jobTitle}
                     </button>
@@ -103,8 +104,9 @@ export function ApplicationList({ applications, loading }: Props) {
                   {/* The row expands inline for a quick look; this goes to the
                       full record, including the pipeline turnaround time that
                       the table has no room for. */}
-                  <Link to={`/applications/${app.id}`} aria-label={`View details for ${app.jobTitle}`}>
+                  <Link to={`/applications/${app.id}`} className="row-link" aria-label={`View details for ${app.jobTitle}`}>
                     Details
+                    <ArrowRight size={13} aria-hidden="true" />
                   </Link>
                 </td>
               </tr>

@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import { useApplication } from '../api/applications';
 import { toErrorMessage } from '../api/errors';
 import { StatusPill } from '../components/StatusPill';
@@ -19,7 +20,10 @@ export function ApplicationDetail() {
     return (
       <div className="form-error" role="alert">
         <p>{toErrorMessage(error, 'Could not load this application.')}</p>
-        <Link to="/">Back to all applications</Link>
+        <Link to="/" className="back-link">
+          <ArrowLeft size={14} aria-hidden="true" />
+          Back to all applications
+        </Link>
       </div>
     );
   }
@@ -32,7 +36,10 @@ export function ApplicationDetail() {
   return (
     <article className="detail">
       <p>
-        <Link to="/">← All applications</Link>
+        <Link to="/" className="back-link">
+          <ArrowLeft size={14} aria-hidden="true" />
+          All applications
+        </Link>
       </p>
 
       <h2>{data.jobTitle}</h2>

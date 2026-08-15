@@ -1,3 +1,4 @@
+import { Wifi, WifiOff, Loader2 } from 'lucide-react';
 import type { LiveStatus } from '../hooks/useLiveMatchUpdates';
 
 const LABEL: Record<LiveStatus, string> = {
@@ -5,6 +6,13 @@ const LABEL: Record<LiveStatus, string> = {
   live: 'Live',
   reconnecting: 'Reconnecting…',
   offline: 'Live updates unavailable',
+};
+
+const ICON: Record<LiveStatus, typeof Wifi> = {
+  connecting: Loader2,
+  live: Wifi,
+  reconnecting: Loader2,
+  offline: WifiOff,
 };
 
 /**
@@ -15,9 +23,12 @@ const LABEL: Record<LiveStatus, string> = {
  * exactly like a quiet one.
  */
 export function LiveIndicator({ status }: { status: LiveStatus }) {
+  const Icon = ICON[status];
+  const spinning = status === 'connecting' || status === 'reconnecting';
+
   return (
     <span className={`live live--${status}`} role="status">
-      <span className="live__dot" aria-hidden="true" />
+      <Icon size={13} className={spinning ? 'live__icon live__icon--spin' : 'live__icon'} aria-hidden="true" />
       {LABEL[status]}
     </span>
   );

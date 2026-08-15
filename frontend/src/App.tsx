@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Target, LogOut } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
 import { LoginForm } from './components/LoginForm';
 import { LiveIndicator } from './components/LiveIndicator';
@@ -18,12 +19,18 @@ function App() {
   return (
     <div className="app">
       <header className="app__header">
-        <h1 className="app__brand">Job-Search Copilot</h1>
+        <h1 className="app__brand">
+          <Target size={17} strokeWidth={2.25} aria-hidden="true" />
+          Job-Search Copilot
+        </h1>
         {token && (
           <div className="app__session">
             <LiveIndicator status={liveStatus} />
             <span className="muted">{email}</span>
-            <button type="button" className="btn btn--ghost" onClick={logout}>Logout</button>
+            <button type="button" className="btn btn--ghost" onClick={logout}>
+              <LogOut size={14} aria-hidden="true" />
+              Logout
+            </button>
           </div>
         )}
       </header>

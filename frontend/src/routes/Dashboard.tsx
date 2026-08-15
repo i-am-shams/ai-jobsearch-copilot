@@ -12,7 +12,7 @@ export function Dashboard() {
       <hr />
 
       <div className="list-header">
-        <h3>Tracked applications</h3>
+        <h3>Applications</h3>
         {/* Background refetches used to be indistinguishable from nothing
             happening. This is quiet, but it is honest. */}
         {isFetching && !isPending && <span className="muted">Refreshing…</span>}
