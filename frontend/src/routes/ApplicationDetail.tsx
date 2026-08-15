@@ -3,6 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import { useApplication } from '../api/applications';
 import { toErrorMessage } from '../api/errors';
 import { StatusPill } from '../components/StatusPill';
+import { LoadingState } from '../components/StateMessage';
 
 /**
  * Detail view for one application.
@@ -14,7 +15,7 @@ export function ApplicationDetail() {
   const { id = '' } = useParams();
   const { data, isPending, isError, error } = useApplication(id);
 
-  if (isPending) return <p className="muted">Loading…</p>;
+  if (isPending) return <LoadingState />;
 
   if (isError) {
     return (

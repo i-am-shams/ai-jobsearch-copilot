@@ -4,6 +4,7 @@ import { ChevronRight, ChevronDown, ArrowRight } from 'lucide-react';
 import type { ApplicationResponse } from '../types/application';
 import { StatusPill } from './StatusPill';
 import { AnimatedScore } from './AnimatedScore';
+import { LoadingState, EmptyState } from './StateMessage';
 
 interface Props {
   applications: ApplicationResponse[];
@@ -40,11 +41,11 @@ export function ApplicationList({ applications, loading }: Props) {
   // are triggered by live updates, and blanking the table on every push would
   // make it flicker for no reason.
   if (loading && applications.length === 0) {
-    return <p className="muted">Loading…</p>;
+    return <LoadingState />;
   }
 
   if (applications.length === 0) {
-    return <p className="muted">No applications tracked yet. Add one above to get a match score.</p>;
+    return <EmptyState title="No applications tracked yet" hint="Add one above to get a match score." />;
   }
 
   return (
