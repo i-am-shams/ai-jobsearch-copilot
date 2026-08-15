@@ -19,7 +19,7 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Polish-and-publish interlude — **A, B and D complete.** Frontend verified in a real browser then modernised (TanStack Query, react-hook-form + zod, routing + detail page, **21 first-ever frontend tests**, error boundary/toasts/a11y). A bug audit found and fixed **seven** more silent failures of the `gapAnalysis` class — including SignalR silently degraded to long polling, and a single exception able to stop the worker permanently while reporting healthy. Docs sanitized; **publication paused by decision** (history still holds the address/username). Portfolio has a new Engineering Deep Dive section. **Outstanding: the uptime monitor (needs an account).** See **"Polish-and-publish interlude — status"**.
+**Last updated:** Polish-and-publish interlude — **A, B, D, E and F complete.** Frontend verified in a real browser then modernised (TanStack Query, react-hook-form + zod, routing + detail page, **21 first-ever frontend tests**, error boundary/toasts/a11y). A bug audit found and fixed **seven** more silent failures of the `gapAnalysis` class — including SignalR silently degraded to long polling, and a single exception able to stop the worker permanently while reporting healthy. Docs sanitized; **publication paused by decision** (history still holds the address/username). Portfolio has a new Engineering Deep Dive section. Frontend then given a Linear-inspired visual redesign (fixed a leftover Vite-template layout bug, real button system, sticky header, quiet row-list table), verified live in production. Uptime monitor registered by the user directly. **Only open item: publication (C), still on hold.** See **"Polish-and-publish interlude — status"**.
 
 > ✅ **Everything is pushed and deployed.** `master` and `origin/master` match, and CI/CD was green on every push this session. The repo is **still private** — see interlude item C.
 
@@ -376,7 +376,7 @@ ai-jobsearch-copilot/
 ## Polish-and-publish interlude — status
 
 Project 1's roadmap steps (1–36) are complete. This interlude was agreed before starting
-Project 2. **A, B, D and F are done; C is deliberately paused; E is blocked on credentials.**
+Project 2. **A, B, D, E and F are done; C is deliberately paused.**
 
 ### A. Frontend verified, then modernised — done
 
@@ -476,9 +476,9 @@ that one field once this repo goes public.** Two new smoke tests, including asse
 diagram actually renders (`naturalWidth > 0`) rather than merely that the file is referenced.
 All 7 pass, production build clean, pushed.
 
-### E. Uptime monitor — blocked, needs an account
+### E. Uptime monitor — done (registered by the user directly)
 
-Not registered: UptimeRobot needs credentials this session did not have.
+Registered on the user's own UptimeRobot account, using the exact config verified below.
 
 **The monitor's semantics were verified against production, so the setup is exactly right:**
 
