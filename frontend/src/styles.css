@@ -21,28 +21,96 @@
   opacity: 0.7;
 }
 
+/* ---------- buttons ---------- */
+
+button {
+  box-sizing: border-box;
+  font: inherit;
+  cursor: pointer;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.85rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  border: 1px solid transparent;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn--primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btn--secondary {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text-h);
+}
+.btn--secondary:hover:not(:disabled) {
+  border-color: var(--accent-border);
+}
+
+.btn--ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+  font-size: 0.85rem;
+  padding: 0.35rem 0.7rem;
+}
+.btn--ghost:hover:not(:disabled) {
+  color: var(--text-h);
+  border-color: var(--accent-border);
+}
+
 /* ---------- table ---------- */
 
 .applications {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.95rem;
+  font-size: 0.88rem;
 }
 
 .applications th,
 .applications td {
   text-align: left;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
   vertical-align: middle;
 }
 
-.applications th {
-  font-size: 0.8rem;
+.applications thead th {
+  border-bottom: 1px solid var(--border);
+  font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text);
-  opacity: 0.75;
+  opacity: 0.65;
+  font-weight: 500;
+  padding-bottom: 10px;
+}
+
+.applications tbody tr.row {
+  border-bottom: 1px solid var(--border);
+  transition: background-color 120ms ease;
+}
+.applications tbody tr.row:hover {
+  background: var(--surface);
+}
+.applications tbody tr.row:last-child {
+  border-bottom: none;
 }
 
 .applications .numeric {
@@ -53,6 +121,7 @@
 .score {
   font-weight: 600;
   color: var(--text-h);
+  font-variant-numeric: tabular-nums;
 }
 
 /* A brief highlight when a result arrives over SignalR, so the live update is
@@ -214,34 +283,51 @@
 }
 
 /* --- App shell ------------------------------------------------------------ */
-.app { max-width: 62rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+.app { display: flex; flex-direction: column; min-height: 100svh; }
 .app__header {
-  display: flex; flex-wrap: wrap; align-items: baseline;
-  justify-content: space-between; gap: 0.75rem; margin-bottom: 1.5rem;
+  position: sticky; top: 0; z-index: 10;
+  display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: space-between; gap: 0.75rem;
+  padding: 0.85rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
 }
-.app__header h1 { margin: 0; font-size: 1.5rem; }
-.app__session { display: flex; align-items: center; gap: 0.75rem; font-size: 0.9rem; }
+.app__brand {
+  margin: 0; font-size: 0.92rem; font-weight: 600;
+  letter-spacing: -0.01em; color: var(--text-h);
+}
+.app__session { display: flex; align-items: center; gap: 0.75rem; font-size: 0.85rem; }
+
+main {
+  flex: 1; width: 100%; max-width: 52rem; margin: 0 auto;
+  padding: 2rem 1.5rem 4rem; text-align: left;
+}
 
 .card {
-  border: 1px solid var(--border); border-radius: 10px;
+  border: 1px solid var(--border); border-radius: var(--radius);
   padding: 1.25rem; margin-bottom: 1.5rem;
+  background: var(--bg); box-shadow: var(--shadow);
   display: flex; flex-direction: column; gap: 0.9rem;
+  text-align: left;
 }
 .card h2, .card h3 { margin: 0; }
+.card > .btn { align-self: flex-start; }
 
-.list-header { display: flex; align-items: baseline; gap: 0.75rem; }
+.list-header { display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 0.85rem; }
 .list-header h3 { margin: 0; }
 
 /* --- Fields --------------------------------------------------------------- */
-.field { display: flex; flex-direction: column; gap: 0.3rem; }
-.field label { font-size: 0.85rem; font-weight: 600; color: var(--text-h); }
+.field { display: flex; flex-direction: column; gap: 0.35rem; }
+.field label { font-size: 0.82rem; font-weight: 500; color: var(--text); }
 .field input, .field textarea {
-  font: inherit; font-size: 0.95rem; padding: 0.5rem 0.6rem;
-  border: 1px solid var(--border); border-radius: 6px;
+  font: inherit; font-size: 0.9rem; padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg); color: var(--text-h); width: 100%;
+  transition: border-color 120ms ease;
 }
+.field input:hover, .field textarea:hover { border-color: var(--text); }
 .field input:focus-visible, .field textarea:focus-visible {
-  outline: 2px solid var(--accent); outline-offset: 1px;
+  outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
 }
 /* Invalid fields are marked by more than colour alone, so the state survives
    both colour-blindness and a monochrome display. */
@@ -254,8 +340,14 @@
 button.link {
   background: none; border: none; padding: 0;
   color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
 
 /* Every interactive element gets a visible focus ring; keyboard navigation was
    previously possible but effectively untrackable. */
@@ -270,17 +362,17 @@ a:focus-visible, button:focus-visible {
 }
 
 /* --- Detail page ---------------------------------------------------------- */
-.detail h2 { margin-bottom: 0.15rem; }
+.detail h2 { margin-bottom: 0.2rem; }
 .detail__meta {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: 1rem; margin: 1.5rem 0; padding: 1rem;
-  border: 1px solid var(--border); border-radius: 10px;
+  gap: 1rem; margin: 1.5rem 0; padding: 1rem 1.1rem;
+  background: var(--surface); border-radius: var(--radius);
 }
 .detail__meta dt {
-  font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
-  color: var(--text); margin-bottom: 0.25rem;
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text); opacity: 0.7; margin-bottom: 0.3rem;
 }
-.detail__meta dd { margin: 0; font-size: 1rem; color: var(--text-h); }
+.detail__meta dd { margin: 0; font-size: 0.95rem; color: var(--text-h); }
 .detail__analysis {
   border-left: 3px solid var(--accent); padding-left: 1rem; margin-left: 0;
 }
@@ -288,10 +380,10 @@ a:focus-visible, button:focus-visible {
 /* --- Error boundary ------------------------------------------------------- */
 .boundary {
   max-width: 40rem; margin: 3rem auto; padding: 1.5rem;
-  border: 1px solid var(--status-failed); border-radius: 10px;
+  border: 1px solid var(--status-failed); border-radius: var(--radius);
 }
 .boundary__detail {
-  background: var(--code-bg); padding: 0.75rem; border-radius: 6px;
+  background: var(--code-bg); padding: 0.75rem; border-radius: var(--radius-sm);
   overflow-x: auto; font-size: 0.85rem; white-space: pre-wrap;
 }
 
@@ -303,7 +395,7 @@ a:focus-visible, button:focus-visible {
 }
 .toast {
   display: flex; align-items: flex-start; gap: 0.75rem;
-  padding: 0.7rem 0.9rem; border-radius: 8px; font-size: 0.88rem;
+  padding: 0.7rem 0.9rem; border-radius: var(--radius); font-size: 0.88rem;
   border: 1px solid var(--border); background: var(--bg);
   box-shadow: var(--shadow);
   animation: toast-in 180ms ease-out;

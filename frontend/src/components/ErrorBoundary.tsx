@@ -39,7 +39,7 @@ export class ErrorBoundary extends Component<Props, State> {
           The error has been logged to the browser console. Reloading usually clears it.
         </p>
         <pre className="boundary__detail">{this.state.error.message}</pre>
-        <button type="button" onClick={() => window.location.reload()}>
+        <button type="button" className="btn btn--primary" onClick={() => window.location.reload()}>
           Reload the page
         </button>
       </div>

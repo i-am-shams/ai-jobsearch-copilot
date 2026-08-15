@@ -97,7 +97,7 @@ export function ApplicationForm() {
         </p>
       )}
 
-      <button type="submit" disabled={createApplication.isPending}>
+      <button type="submit" className="btn btn--primary" disabled={createApplication.isPending}>
         {createApplication.isPending ? 'Submitting…' : 'Submit'}
       </button>
     </form>

@@ -376,7 +376,7 @@ ai-jobsearch-copilot/
 ## Polish-and-publish interlude — status
 
 Project 1's roadmap steps (1–36) are complete. This interlude was agreed before starting
-Project 2. **A, B and D are done; C is deliberately paused; E is blocked on credentials.**
+Project 2. **A, B, D and F are done; C is deliberately paused; E is blocked on credentials.**
 
 ### A. Frontend verified, then modernised — done
 
@@ -490,6 +490,23 @@ Not registered: UptimeRobot needs credentials this session did not have.
 That second row is the whole argument: **a status-only monitor would report UP on a
 completely broken deployment.** The monitor must be **keyword type, matching `Healthy`,
 alerting when the keyword is *not* found** — see Step 35, bug 1, which is the same trap.
+
+### F. Visual redesign — Linear-inspired, done
+
+Raised after A-E: the frontend worked but read as visually unfinished. Verified live in a
+browser before touching anything (Playwright, both light and dark) — the actual defects were a
+leftover Vite-template bug (`#root { width: 1126px; text-align: center; border-inline }`
+centering the entire app in a narrow floating column with dead whitespace either side) and
+fully unstyled native buttons. Researched current SaaS-dashboard direction, presented three
+concrete options (Linear-minimal / Vercel-Stripe monochrome / Supabase-dark-dev-tool) with
+mockup previews; **Linear-inspired chosen** — kept the existing purple accent token, added a
+real `.btn` system (primary/secondary/ghost), a sticky full-width header with the content
+column left-aligned below it, tightened type scale (15px base, 600-weight headings), restyled
+the applications table from a bordered grid to a quiet hover-able row list, fixed unstyled
+default browser link color, flattened the detail-page metadata box to a tinted surface. CSS-only
+change plus a handful of `className` additions — no component logic touched. **Verified**: 21/21
+tests still pass, `tsc -b && vite build` clean, checked live in a real browser in both color
+schemes before and after.
 
 ### Then: Project 2
 

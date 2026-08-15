@@ -18,12 +18,12 @@ function App() {
   return (
     <div className="app">
       <header className="app__header">
-        <h1>Job-Search Copilot</h1>
+        <h1 className="app__brand">Job-Search Copilot</h1>
         {token && (
           <div className="app__session">
             <LiveIndicator status={liveStatus} />
             <span className="muted">{email}</span>
-            <button type="button" onClick={logout}>Logout</button>
+            <button type="button" className="btn btn--ghost" onClick={logout}>Logout</button>
           </div>
         )}
       </header>

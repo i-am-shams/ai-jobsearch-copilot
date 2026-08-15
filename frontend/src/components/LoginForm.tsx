@@ -76,7 +76,7 @@ export function LoginForm() {
       )}
 
       <div className="actions">
-        <button type="submit" disabled={isSubmitting}>
+        <button type="submit" className="btn btn--primary" disabled={isSubmitting}>
           {isSubmitting ? 'Working…' : isRegister ? 'Register' : 'Login'}
         </button>
         <button type="button" className="link" onClick={() => { setIsRegister(!isRegister); setSubmitError(null); }}>

@@ -21,7 +21,7 @@ export function Dashboard() {
       {isError ? (
         <div className="form-error" role="alert">
           <p>{toErrorMessage(error, 'Could not load your applications.')}</p>
-          <button type="button" onClick={() => refetch()}>
+          <button type="button" className="btn btn--secondary" onClick={() => refetch()}>
             Try again
           </button>
         </div>
