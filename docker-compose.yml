@@ -152,5 +152,45 @@ services:
       api:
         condition: service_healthy
 
+  # Observability leg of Project 2: ships this stack's metrics (host + every
+  # container) and logs (every container's stdout/stderr) to Grafana Cloud.
+  # Independent of the app - nothing here is a dependency of anything else,
+  # so it can fail without affecting the actual product.
+  alloy:
+    image: grafana/alloy:latest
+    command:
+      - run
+      # 0.0.0.0 here is safe: the host-side port mapping below is still
+      # loopback-only. Binding to 127.0.0.1 here would mean "loopback of
+      # the container's own network namespace" - unreachable through the
+      # port mapping from the host at all (same class of bug as the
+      # frontend nginx/wget mismatch documented in docs/HANDOVER.md).
+      - --server.http.listen-addr=0.0.0.0:12345
+      - /etc/alloy/config.alloy
+    ports:
+      - "127.0.0.1:12345:12345"
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # Read-only Docker socket: needed by both cAdvisor (per-container
+      # metrics) and the Docker log/discovery components. Same trust
+      # boundary the deploy VPS user already sits in (docker group =
+      # root-equivalent), not a new privilege being introduced.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Host metrics: bind-mounted read-only, paths matched to config.alloy's
+      # procfs_path/sysfs_path/rootfs_path.
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro
+    environment:
+      GRAFANA_CLOUD_METRICS_URL: ${GRAFANA_CLOUD_METRICS_URL}
+      GRAFANA_CLOUD_METRICS_USER: ${GRAFANA_CLOUD_METRICS_USER}
+      GRAFANA_CLOUD_LOGS_URL: ${GRAFANA_CLOUD_LOGS_URL}
+      GRAFANA_CLOUD_LOGS_USER: ${GRAFANA_CLOUD_LOGS_USER}
+      GRAFANA_CLOUD_API_KEY: ${GRAFANA_CLOUD_API_KEY}
+    # No healthcheck: the official image ships no curl/wget (open upstream
+    # issue), so a CMD-based check can't be written honestly. deploy.sh's
+    # wait_for_healthy() already treats a container with no healthcheck as a
+    # non-fatal warning, so this doesn't block deploys on the other services.
+
 volumes:
   pgdata:

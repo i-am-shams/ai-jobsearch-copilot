@@ -1,0 +1,124 @@
+// Ships this stack's metrics and logs to Grafana Cloud (the observability leg
+// of Project 2 - see docs/HANDOVER.md). Credentials come from environment
+// variables set in docker-compose / .env, never literal values here (see
+// AGENTS.md: never put real secrets in this git repo).
+
+// ###############################
+// #### Metrics: VPS host ########
+// ###############################
+// Requires /proc, /sys and / bind-mounted read-only into the alloy
+// container at /host/proc, /host/sys, /host (see docker-compose.yml).
+prometheus.exporter.unix "vps" {
+  procfs_path = "/host/proc"
+  sysfs_path  = "/host/sys"
+  rootfs_path = "/host"
+}
+
+prometheus.scrape "vps" {
+  targets         = prometheus.exporter.unix.vps.targets
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+  scrape_interval = "60s"
+}
+
+// ###############################
+// #### Metrics: containers ######
+// ###############################
+// cAdvisor scrapes every container on the host in one pass - there's no
+// per-target discovery step to filter before scraping, since this VPS also
+// runs an unrelated co-hosted project (see AGENTS.md: never touch or expose
+// data belonging to that project). Filtering has to happen post-scrape, on
+// the cadvisor-emitted "name" label (the container's name, no leading
+// slash), via prometheus.relabel below - not discovery.relabel, which only
+// controls target-level labels here, not which containers get scraped.
+prometheus.exporter.cadvisor "containers" {
+  docker_only = true
+}
+
+discovery.relabel "containers" {
+  targets = prometheus.exporter.cadvisor.containers.targets
+
+  rule {
+    target_label = "instance"
+    replacement  = constants.hostname
+  }
+}
+
+prometheus.scrape "containers" {
+  targets         = discovery.relabel.containers.output
+  forward_to      = [prometheus.relabel.containers_filter.receiver]
+  scrape_interval = "60s"
+}
+
+prometheus.relabel "containers_filter" {
+  forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+  rule {
+    source_labels = ["name"]
+    regex         = "jobcopilot-.*"
+    action        = "keep"
+  }
+}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_CLOUD_METRICS_URL")
+    basic_auth {
+      username = sys.env("GRAFANA_CLOUD_METRICS_USER")
+      password = sys.env("GRAFANA_CLOUD_API_KEY")
+    }
+  }
+}
+
+// ###############################
+// #### Logs: containers #########
+// ###############################
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Scoped to this project's own containers only - the same shared-VPS
+// constraint as the metrics side above. Without this "keep" rule, Alloy
+// also tails the co-hosted project's containers, which are unrelated data
+// we have no business collecting, and whose weeks-old log backlog gets
+// batched alongside ours and causes Loki to reject the whole batch as
+// "timestamp too old" - silently dropping our own current logs too.
+// Docker container names come prefixed with a leading "/" (e.g.
+// "/jobcopilot-api") - stripped into a clean container_name label after
+// the keep filter runs.
+discovery.relabel "container_logs" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/jobcopilot-.*"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container_name"
+  }
+
+  rule {
+    target_label = "instance"
+    replacement  = constants.hostname
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.container_logs.rules
+  forward_to    = [loki.write.grafana_cloud.receiver]
+}
+
+loki.write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_CLOUD_LOGS_URL")
+    basic_auth {
+      username = sys.env("GRAFANA_CLOUD_LOGS_USER")
+      password = sys.env("GRAFANA_CLOUD_API_KEY")
+    }
+  }
+}

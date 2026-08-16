@@ -27,12 +27,17 @@ RabbitMQ topology (a real bug — a second consumer silently splitting the API's
 and fixed before it shipped). Verified four ways: local dev, the actual Docker image, a local
 `kind` Kubernetes cluster (card-free substitute for managed K8s), and now the real VPS deployment
 — all 6 containers healthy, a real submitted application independently produced a real document in
-MongoDB Atlas, confirmed by querying Atlas directly. See **"Project 2 — microservices +
-cloud-native deploy"**.
+MongoDB Atlas, confirmed by querying Atlas directly. **Grafana Cloud observability is now also live
+on the VPS** — a 7th container (`alloy`) ships host + per-container metrics and logs, scoped to
+this project's own containers only after a real bug (unscoped discovery was shipping the co-hosted
+`<other-app>` app's data too, and its log backlog was silently dropping this project's own logs) was
+caught and fixed live. See **"Project 2 — microservices + cloud-native deploy"**.
 
 > ✅ **Everything is pushed and deployed.** `master` and `origin/master` match, CI/CD was green,
-> and the notifications service is live on the VPS. The repo is **still private** — see interlude
-> item C. **Still open in Project 2**: Grafana Cloud (not started) and real Terraform.
+> and the notifications + Alloy observability services are both live on the VPS. The repo is
+> **still private** — see interlude item C. **Still open in Project 2**: real Terraform, and
+> `docs/architecture.mmd`/`.png` still need the notifications/Atlas/Grafana pass (deliberately
+> deferred until all three cross-cutting pieces existed).
 
 ## 🚀 LIVE DEPLOYMENT
 
@@ -616,12 +621,62 @@ a real document in MongoDB Atlas, confirmed by querying Atlas directly (`mongosh
 'db.notifications.findOne(...)'`), not by trusting a log line.
 
 **Still open:**
-- Grafana Cloud account (blocking: centralized logging/monitoring — not started yet).
 - Terraform for real this time (Atlas provider now that a real cluster exists; VPS `remote-exec`
   this time in an actual Claude Code terminal, where AGENTS.md already notes the SSH tooling
   failure that blocked Project 1 likely doesn't apply).
-- The VPS-side wiring itself (compose file, `deploy.sh`'s container list, secrets) once Atlas is
-  ready.
+
+### Grafana Cloud — live, metrics and logs flowing from the VPS
+
+Free tier (auto-enrolls in a 14-day "Unlimited Usage" trial first; no card was ever entered, so it
+auto-reverts to the permanent free plan with no action needed and no charge risk). Grafana Alloy
+(the current unified agent, successor to Grafana Agent/Promtail) runs as a new `alloy` container
+alongside the other six — added to `docker-compose.yml`, `deploy.sh`'s health-gate list, and
+`observability/alloy/config.alloy` (the actual pipeline config, mounted read-only). Ships:
+- **Metrics**: VPS host (`prometheus.exporter.unix`) and per-container (`prometheus.exporter.cadvisor`).
+- **Logs**: every scoped container's stdout/stderr, via Docker log discovery.
+
+**Real bug, caught before it reached the VPS**: pasting the Grafana Cloud API token from a
+screenshot (rather than using its own "Copy to clipboard" button) silently corrupted it —
+Alloy logged a clean `401: authentication error: invalid token` on both the metrics and logs
+endpoints. Config itself was fine (component graph evaluated without error); only the secret was
+wrong. Re-copied properly via the clipboard button, fixed.
+
+**Second bug, caught live on the VPS, not locally**: Alloy's Docker discovery has no built-in
+project scoping — by default it scrapes/tails **every container on the host**, including the
+unrelated co-hosted `<other-app>` app. Two consequences, both real: (1) `<other-app>`'s own container
+metrics were being shipped into this project's Grafana Cloud account, data that has nothing to do
+with this project; (2) worse, `<other-app>-nginx`/`<other-app>-postgres` have log files stretching back
+to May, and Grafana Cloud Loki rejects an entire batch if *any* entry in it is older than roughly
+the last 7 days — so batching their ancient backlog alongside this project's own current logs was
+causing **100% of logs to be silently dropped**, including this project's own. Fixed by adding an
+explicit scope filter in both pipelines: a `keep` action on the `name` label (post-scrape
+`prometheus.relabel`, since cAdvisor exposes one scrape target for the whole host, not one per
+container) for metrics, and a `keep` action on `__meta_docker_container_name` (pre-tail
+`discovery.relabel`) for logs — both matching `jobcopilot-.*` only.
+
+**Third, smaller issue also found live**: even after that fix, one more batch of "timestamp too
+old" drops appeared — this time from this project's *own* containers. Docker's default `json-file`
+log driver keeps a container's full log history across plain restarts (only a true recreate resets
+it), so a container last recreated more than ~7 days ago had its own old backlog rejected on
+Alloy's first tailing pass. Confirmed (not assumed) this was a one-time catch-up, not a steady
+problem: watched the drop counter stay flat while the sent-bytes counter kept climbing over the
+next ~30s with zero new errors.
+
+**Also found**: binding Alloy's own HTTP server to `127.0.0.1` *inside* its container made it
+unreachable through the host-side port mapping — the same class of bug as the frontend
+nginx/`wget` mismatch from Step 34. Fixed by binding `0.0.0.0` inside the container (the host-side
+mapping was already loopback-only, so this doesn't expose anything new).
+
+**Verified live, not just "container is up"**: queried Alloy's own `/metrics` endpoint on the VPS
+directly — real, climbing `prometheus_remote_storage_samples_total` and `loki_write_sent_bytes_total`
+counters, zero `*_failed_total`, and confirmed via `docker ps` that all 6 jobcopilot containers
+*and* the 3 co-hosted `<other-app>` containers stayed healthy/unaffected throughout.
+
+**Still open:**
+- The VPS's `docker-compose.yml` is edited directly on the server (same established pattern as the
+  notifications rollout) — a timestamped `.bak` copy of the pre-Alloy version was left next to it
+  before overwriting, in case a rollback is ever needed.
+- No Grafana Cloud dashboards built yet — data is flowing but nothing visualizes it yet.
 
 ## Known Gotchas
 

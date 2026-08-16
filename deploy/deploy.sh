@@ -30,6 +30,7 @@ CONTAINERS=(
   jobcopilot-worker
   jobcopilot-notifications
   jobcopilot-frontend
+  jobcopilot-alloy
 )
 
 cd "$COMPOSE_DIR"
