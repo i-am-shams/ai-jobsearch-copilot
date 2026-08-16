@@ -1,7 +1,7 @@
 flowchart TD
     B["Browser<br/>React 19 + TypeScript SPA"]
 
-    subgraph VPS["Single VPS (Docker Compose)"]
+    subgraph VPS["Single VPS (Docker Compose, managed by Terraform)"]
         N["nginx<br/><i>shared with an unrelated<br/>production app</i>"]
 
         subgraph STACK["jobcopilot stack"]
@@ -9,27 +9,35 @@ flowchart TD
             A["API<br/>ASP.NET Core 8"]
             W["Worker<br/>BackgroundService"]
             P[("PostgreSQL 16")]
-            Q{{"RabbitMQ"}}
+            Q{{"RabbitMQ<br/>match-requests queue"}}
+            X{{"match-completed-fanout<br/>exchange"}}
+            NT["Notifications<br/>Node.js + TypeScript"]
+            AL["Alloy<br/><i>scrapes stack + VPS host</i>"]
         end
     end
 
     G["Google Gemini API"]
+    M[("MongoDB Atlas<br/>M0, own cluster")]
+    GC["Grafana Cloud<br/>metrics + logs"]
 
     B -->|"HTTPS"| N
     N -->|"container name<br/>via shared Docker network"| F
     F --> A
     A -->|"EF Core"| P
-    A -->|"publish<br/>match-requests"| Q
+    A -->|"publish"| Q
     Q -->|"consume"| W
     W -->|"scores the match"| G
     W -->|"write result"| P
-    W -->|"publish<br/>match-completed"| Q
-    Q -->|"consume"| A
+    W -->|"publish once"| X
+    X -->|"own bound queue"| A
+    X -->|"own bound queue"| NT
     A -.->|"SignalR push<br/>per-user group"| B
+    NT -->|"write notification doc"| M
+    AL -.->|"metrics + logs"| GC
 
     classDef infra fill:#e8eef7,stroke:#5b7ba6,color:#1a2634
     classDef app fill:#e6f2ea,stroke:#4f8a68,color:#14251b
     classDef ext fill:#f7efe3,stroke:#b08a4f,color:#2e2415
-    class N,F infra
-    class A,W,P,Q app
-    class G,B ext
+    class N,F,AL infra
+    class A,W,P,Q,X,NT app
+    class G,B,M,GC ext

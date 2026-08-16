@@ -14,7 +14,7 @@ The interesting part isn't the CRUD — it's that the AI call is **asynchronous 
 flowchart TD
     B["Browser<br/>React 19 + TypeScript SPA"]
 
-    subgraph VPS["Single VPS (Docker Compose)"]
+    subgraph VPS["Single VPS (Docker Compose, managed by Terraform)"]
         N["nginx<br/><i>shared with an unrelated<br/>production app</i>"]
 
         subgraph STACK["jobcopilot stack"]
@@ -22,30 +22,38 @@ flowchart TD
             A["API<br/>ASP.NET Core 8"]
             W["Worker<br/>BackgroundService"]
             P[("PostgreSQL 16")]
-            Q{{"RabbitMQ"}}
+            Q{{"RabbitMQ<br/>match-requests queue"}}
+            X{{"match-completed-fanout<br/>exchange"}}
+            NT["Notifications<br/>Node.js + TypeScript"]
+            AL["Alloy<br/><i>scrapes stack + VPS host</i>"]
         end
     end
 
     G["Google Gemini API"]
+    M[("MongoDB Atlas<br/>M0, own cluster")]
+    GC["Grafana Cloud<br/>metrics + logs"]
 
     B -->|"HTTPS"| N
     N -->|"container name<br/>via shared Docker network"| F
     F --> A
     A -->|"EF Core"| P
-    A -->|"publish<br/>match-requests"| Q
+    A -->|"publish"| Q
     Q -->|"consume"| W
     W -->|"scores the match"| G
     W -->|"write result"| P
-    W -->|"publish<br/>match-completed"| Q
-    Q -->|"consume"| A
+    W -->|"publish once"| X
+    X -->|"own bound queue"| A
+    X -->|"own bound queue"| NT
     A -.->|"SignalR push<br/>per-user group"| B
+    NT -->|"write notification doc"| M
+    AL -.->|"metrics + logs"| GC
 
     classDef infra fill:#e8eef7,stroke:#5b7ba6,color:#1a2634
     classDef app fill:#e6f2ea,stroke:#4f8a68,color:#14251b
     classDef ext fill:#f7efe3,stroke:#b08a4f,color:#2e2415
-    class N,F infra
-    class A,W,P,Q app
-    class G,B ext
+    class N,F,AL infra
+    class A,W,P,Q,X,NT app
+    class G,B,M,GC ext
 ```
 
 <sub>Rendered image: [`docs/architecture.png`](docs/architecture.png) — for contexts that don't render Mermaid. Source: [`docs/architecture.mmd`](docs/architecture.mmd).</sub>
@@ -53,9 +61,10 @@ flowchart TD
 ### How one submission flows
 
 1. `POST /api/applications` — persists the row, publishes `MatchRequested`, returns `Pending` **immediately**. The user never waits on the AI.
-2. The **worker** consumes the message, calls Gemini, writes the score and gap analysis, and publishes `MatchCompleted`.
-3. The **API** consumes that second message and pushes to the browser over SignalR, scoped to a per-user group keyed on the JWT `sub` claim.
+2. The **worker** consumes the message, calls Gemini, writes the score and gap analysis, and publishes `MatchCompleted` once — to a **fanout exchange**, not directly to a queue, so every independent subscriber gets its own copy of every event (a queue would round-robin deliveries between subscribers instead, silently dropping roughly half of what each one sees — a real bug caught and fixed before it shipped).
+3. Two independent subscribers each bind their own queue to that exchange: the **API**, which pushes to the browser over SignalR scoped to a per-user group keyed on the JWT `sub` claim; and the **notifications service**, a separate Node.js bounded context that records its own notification document to its own MongoDB Atlas cluster — no dependency on the API/worker's Postgres or code.
 4. The table updates live. No polling, no refresh.
+5. Independently of all of that, **Alloy** ships host and container metrics/logs to Grafana Cloud the whole time, scoped to this project's own containers only (a shared VPS also runs an unrelated production app).
 
 ---
 
@@ -145,9 +154,9 @@ A résumé is untrusted input that gets concatenated into a prompt. Input side: 
 
 Listed because they're real, not because they're finished.
 
-- **No infrastructure-as-code.** The plan called for Terraform. The deployment is genuinely reproducible and fully documented, but it was executed as guided manual steps, not managed by a tool. Ansible is arguably the better fit for configuring an existing server; Terraform's `remote-exec` provisioners are described by HashiCorp itself as a last resort.
+- **`.env` secrets aren't Terraform-managed.** `terraform/vps` deploys `docker-compose.yml`, `deploy.sh`, and the observability config, but deliberately leaves the VPS's `.env` (Postgres/RabbitMQ/JWT/Gemini secrets) hand-maintained — templating and overwriting live secrets on a first apply was judged a worse risk than the manual step it would replace. Ansible is arguably still the better fit for configuring an existing server generally; Terraform's `remote-exec` provisioners are described by HashiCorp itself as a last resort.
+- **The notifications database user has broader privileges than it needs** (`atlasAdmin` on `admin`, not a scoped `readWrite` on its own database) — found via Terraform import, named honestly rather than silently tightened, since narrowing a live credential's access is a separate decision from adopting IaC.
 - **Deploys pull `:latest`, not the commit SHA.** Images *are* tagged with both, so a rollback is possible, but it means editing the VPS compose by hand. Pinning properly requires the forced command to accept a validated argument — which is the correct fix, not a hard one.
-- **Failed matches don't push a SignalR update.** Only success publishes to the second queue, so a failure requires a refresh to see.
 - **Single API instance.** Migrations run on startup, which is correct for one instance and wrong for several.
 - **Rate limiting is per-instance and in-memory.** A distributed limiter would be needed behind more than one API.
 - **Four tests.** They cover password hashing and JWT generation. The async pipeline is verified by exercising it, not by an automated integration test.
