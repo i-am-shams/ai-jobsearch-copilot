@@ -21,16 +21,18 @@
 
 **Last updated:** Polish-and-publish interlude complete except publication (**C**, still on hold
 by decision). See **"Polish-and-publish interlude — status"** for the full A-F breakdown.
-**Project 2 started**: a Notifications service (`notifications/`, Node.js+TypeScript, own MongoDB)
-extracted as an independent bounded context, consuming `MatchCompletedEvent` off a newly
-fanout-exchanged RabbitMQ topology (a real bug — a second consumer silently splitting the API's
-messages — caught and fixed before it shipped). Verified three ways: local dev, the actual Docker
-image, and a local `kind` Kubernetes cluster (card-free substitute for managed K8s). CI/CD wired
-for the new service; **not yet deployed to the VPS** — deliberately held until MongoDB Atlas and
-Grafana Cloud accounts exist. See **"Project 2 — microservices + cloud-native deploy"**.
+**Project 2's first bounded context is live in production**: a Notifications service
+(`notifications/`, Node.js+TypeScript, own MongoDB Atlas) extracted off a newly fanout-exchanged
+RabbitMQ topology (a real bug — a second consumer silently splitting the API's messages — caught
+and fixed before it shipped). Verified four ways: local dev, the actual Docker image, a local
+`kind` Kubernetes cluster (card-free substitute for managed K8s), and now the real VPS deployment
+— all 6 containers healthy, a real submitted application independently produced a real document in
+MongoDB Atlas, confirmed by querying Atlas directly. See **"Project 2 — microservices +
+cloud-native deploy"**.
 
-> ⚠️ **Not yet pushed this session** — see the Project 2 section for what's ready to commit. The
-> repo is **still private** — see interlude item C.
+> ✅ **Everything is pushed and deployed.** `master` and `origin/master` match, CI/CD was green,
+> and the notifications service is live on the VPS. The repo is **still private** — see interlude
+> item C. **Still open in Project 2**: Grafana Cloud (not started) and real Terraform.
 
 ## 🚀 LIVE DEPLOYMENT
 
@@ -568,25 +570,56 @@ from the code alone.
    several backoff retries, then connected once RabbitMQ was actually up. Confirmed by reading the
    pod's own logs.
 
-**CI/CD wired, deliberately not yet touching the live VPS**: `ci.yml` gained a `notifications`
-job (build + a real test suite — 5 tests on the event-shape type guard, including a case that
-would catch the serialization casing changing). `cd.yml`'s build matrix gained a fourth image
-(`ghcr.io/.../ai-jobsearch-copilot-notifications`). This is safe to have pushed: the VPS's own
-`docker-compose.yml` and `deploy.sh` (a **hardcoded** container list, not a dynamic read of
-whatever's in any compose file) both live only on the VPS, manually maintained — pushing to
-master builds and publishes the new image but does not deploy it anywhere until someone
-deliberately updates the VPS's own files. That deliberate step is being held until MongoDB Atlas
-is actually configured — wiring an unconfigured Mongo connection into the VPS's healthcheck-gated
-deploy would hang or fail `deploy.sh`'s health-wait for the *whole* stack, not just the new
-service.
+**CI/CD wired**: `ci.yml` gained a `notifications` job (build + a real test suite — 5 tests on
+the event-shape type guard, including a case that would catch the serialization casing
+changing). `cd.yml`'s build matrix gained a fourth image
+(`ghcr.io/.../ai-jobsearch-copilot-notifications`).
+
+**Real bug caught by CI itself, not local testing**: the test script's `src/**/*.test.ts` glob
+only expanded correctly in shells with `globstar` enabled (my local Git Bash session had it on;
+GitHub Actions' non-interactive script shell doesn't by default) — the literal unexpanded string
+got handed to Node's test runner on the real runner, which failed the job outright. Fixed by
+pointing at the test file explicitly rather than depending on shell-glob behaviour that differs
+across environments — the same category of lesson as `AGENTS.md`'s existing PowerShell-quoting
+entries, just a different shell pair.
+
+### MongoDB Atlas — live, account created and fully wired
+
+Free M0 cluster, AWS, Singapore region (closest low-latency option to Bangladesh). Two real
+issues found and fixed while getting it working, neither of them a code bug:
+
+1. **`mongodb+srv://` DNS SRV lookup failed via Node's own resolver** (`querySrv ECONNREFUSED`)
+   on the local dev workstation, while the OS's own resolver (`nslookup`) answered the identical
+   query fine. Confirmed directly (`dns.resolveSrv` failed against the network's configured
+   server, succeeded immediately once pointed at `8.8.8.8`/`1.1.1.1`) — a known class of issue
+   with `mongodb+srv` specifically. Fixed in `notifications/src/mongo.ts` by setting explicit
+   public DNS servers before connecting, not a workaround for one machine.
+2. **TLS handshake failed with `SSL alert number 80 (internal_error)`** — from *both* the local
+   workstation and, separately, the VPS (two unrelated networks, identical failure, confirmed with
+   raw `openssl s_client`, not just the driver). When two unrelated networks hit the same failure,
+   the common factor is the server side: Atlas's **Network Access (IP allowlist)** had only the one
+   IP added by its own "Automate security setup" flow — neither the workstation's real egress IP
+   nor the VPS's IP were in it. Fixed by adding the VPS's IP; re-verified with a real `mongosh
+   --eval 'db.runCommand({ping:1})'` returning `{ ok: 1 }` from the VPS itself.
+
+**Deployed to the VPS for real** — `/opt/jobcopilot/docker-compose.yml` gained the `notifications`
+service block (own `MONGO_URI`/`MONGO_DB_NAME`, depends only on `rabbitmq`, no dependency on
+Postgres or the co-hosted app's network), `/opt/jobcopilot/.env` gained `MONGO_URI`, and
+`deploy.sh`'s (hardcoded, not dynamically read) container list gained `jobcopilot-notifications` —
+all three edited directly on the VPS then re-verified (`docker compose config --quiet`) before
+deploying. Rolled out through the normal CD pipeline (`gh run rerun`, per this doc's own stated
+preference over manual SSH, so the real health-gating and smoke test ran) after the CI test-glob
+fix landed. **Fully verified live, not just CD-green**: all 6 containers report healthy;
+`docker ps` confirms the co-hosted <other-app> app unaffected; a real application submitted through
+the public API completed with a real Gemini score, and the exact same event independently produced
+a real document in MongoDB Atlas, confirmed by querying Atlas directly (`mongosh --eval
+'db.notifications.findOne(...)'`), not by trusting a log line.
 
 **Still open:**
-- MongoDB Atlas account (blocking: production `MONGO_URI`, the VPS compose update, and — once
-  there's a real cluster — the actual Terraform provisioning of it).
-- Grafana Cloud account (blocking: centralized logging/monitoring).
-- Terraform for real this time (Atlas provider once the account exists; VPS `remote-exec` this
-  time in an actual Claude Code terminal, where AGENTS.md already notes the SSH tooling failure
-  that blocked Project 1 likely doesn't apply).
+- Grafana Cloud account (blocking: centralized logging/monitoring — not started yet).
+- Terraform for real this time (Atlas provider now that a real cluster exists; VPS `remote-exec`
+  this time in an actual Claude Code terminal, where AGENTS.md already notes the SSH tooling
+  failure that blocked Project 1 likely doesn't apply).
 - The VPS-side wiring itself (compose file, `deploy.sh`'s container list, secrets) once Atlas is
   ready.
 
