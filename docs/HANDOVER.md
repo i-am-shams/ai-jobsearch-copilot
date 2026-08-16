@@ -722,10 +722,11 @@ counters, zero `*_failed_total`, and confirmed via `docker ps` that all 6 jobcop
 
 ## Future Additions (deliberately deferred, don't lose track)
 
-- **Node.js polyglot piece**: a small Node.js service consuming `MatchCompletedEvent` (e.g., logs/webhooks on match completion) — planned as an *additive*, low-risk demonstration of polyglot architecture. Unblocked since Step 22, not yet started.
+- ~~Node.js polyglot piece~~ — **done, Project 2**: the notifications service (`notifications/`) is exactly this — a Node.js/TypeScript service consuming `MatchCompletedEvent`.
 - ~~Failed matches don't push a live SignalR update~~ — **done** in the interlude's bug audit, verified live against an invalid Gemini key.
 - **`Analysing` is unreachable in the UI.** `Processing` is written to the database, but nothing pushes on `Pending -> Processing`, so the status pill can render a state the user can never actually see. Needs either a third event or a status-change push.
 - **No dead-letter queue.** Poison messages are now nacked with `requeue: false`, which drops them rather than stalling the worker — correct, but the message is gone. A DLQ is the real fix.
+- **The notifications Atlas DB user is overprivileged** (`atlasAdmin` on `admin`, not scoped `readWrite` on its own database) — found via `terraform plan` after import, see `terraform/atlas/README.md`. Narrowing it is a real, live-credential change, deliberately not folded into the Terraform-adoption pass itself.
 - **Publication of this repo is paused** — see interlude item C for the history question.
 - **Portfolio `repoUrl` is `null`** in `my-portfolio/data/buildProjects.js`; set it to surface the Source link once this repo is public.
 - ~~Prompt-injection hardening~~ — **done, Step 30.**
