@@ -1,5 +1,15 @@
+import dns from 'node:dns';
 import { MongoClient, type Db } from 'mongodb';
 import { config } from './config.js';
+
+// mongodb+srv:// URIs (Atlas) resolve their real hosts via a DNS SRV lookup.
+// Node's own resolver (c-ares) fails that specific query type on some
+// networks' configured DNS servers even though the OS's own resolver
+// answers it fine (confirmed directly: `dns.resolveSrv` fails against the
+// default servers, succeeds immediately once pointed at a public resolver).
+// A well-known class of issue with mongodb+srv specifically, not a code bug
+// - this is the standard fix, not a workaround for one network.
+dns.setServers(['8.8.8.8', '1.1.1.1']);
 
 let client: MongoClient | undefined;
 let db: Db | undefined;

@@ -28,6 +28,7 @@ CONTAINERS=(
   jobcopilot-rabbitmq
   jobcopilot-api
   jobcopilot-worker
+  jobcopilot-notifications
   jobcopilot-frontend
 )
 

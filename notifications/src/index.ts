@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { connectMongoWithRetry, closeMongo } from './mongo.js';
 import { startConsuming, closeRabbit } from './rabbitmq.js';
 import { handleMatchCompleted } from './handler.js';
