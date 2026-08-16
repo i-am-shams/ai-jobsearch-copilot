@@ -35,10 +35,11 @@ caught and fixed live. See **"Project 2 — microservices + cloud-native deploy"
 
 > ✅ **Everything is pushed and deployed.** `master` and `origin/master` match, CI/CD was green,
 > and the notifications + Alloy observability services are both live on the VPS. Real Terraform
-> (`terraform/atlas`, `terraform/vps`) now covers Atlas and the VPS deploy path too. The repo is
-> **still private** — see interlude item C. **Still open in Project 2**:
-> `docs/architecture.mmd`/`.png` still need the notifications/Atlas/Grafana pass (deliberately
-> deferred until all three cross-cutting pieces existed).
+> (`terraform/atlas`, `terraform/vps`) now covers Atlas and the VPS deploy path too, and
+> `docs/architecture.mmd`/`.png` (plus the root `README.md`) now draw the full picture —
+> notifications, the fanout exchange, Atlas, and Grafana Cloud all in one pass, as planned. The
+> repo is **still private** — see interlude item C. **Project 2's roadmap items are now all done**;
+> see "Project 2 — microservices + cloud-native deploy" for the full detail on each.
 
 ## 🚀 LIVE DEPLOYMENT
 
