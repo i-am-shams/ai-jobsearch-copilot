@@ -1,0 +1,44 @@
+# Demo-only Mongo, standing in for MongoDB Atlas so this manifest set is a
+# genuinely self-contained thing you can `kubectl apply` and watch come up -
+# emptyDir rather than a PersistentVolumeClaim on purpose, since a local kind
+# demo restarting from empty is fine and a PVC would just be extra ceremony
+# for a cluster that gets torn down anyway. Real deployments (VPS, managed
+# cloud) use Atlas, never this.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  namespace: jobcopilot-notifications
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7
+          ports:
+            - containerPort: 27017
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: jobcopilot-notifications
+spec:
+  selector:
+    app: mongo
+  ports:
+    - port: 27017
+      targetPort: 27017

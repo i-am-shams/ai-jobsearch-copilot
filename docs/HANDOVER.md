@@ -19,9 +19,18 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Polish-and-publish interlude — **A, B, D, E and F complete.** Frontend verified in a real browser then modernised (TanStack Query, react-hook-form + zod, routing + detail page, **21 first-ever frontend tests**, error boundary/toasts/a11y). A bug audit found and fixed **seven** more silent failures of the `gapAnalysis` class — including SignalR silently degraded to long polling, and a single exception able to stop the worker permanently while reporting healthy. Docs sanitized; **publication paused by decision** (history still holds the address/username). Portfolio has a new Engineering Deep Dive section. Frontend then given a Linear-inspired visual redesign (fixed a leftover Vite-template layout bug, real button system, sticky header, quiet row-list table), verified live in production. Uptime monitor registered by the user directly. **Only open item: publication (C), still on hold.** See **"Polish-and-publish interlude — status"**.
+**Last updated:** Polish-and-publish interlude complete except publication (**C**, still on hold
+by decision). See **"Polish-and-publish interlude — status"** for the full A-F breakdown.
+**Project 2 started**: a Notifications service (`notifications/`, Node.js+TypeScript, own MongoDB)
+extracted as an independent bounded context, consuming `MatchCompletedEvent` off a newly
+fanout-exchanged RabbitMQ topology (a real bug — a second consumer silently splitting the API's
+messages — caught and fixed before it shipped). Verified three ways: local dev, the actual Docker
+image, and a local `kind` Kubernetes cluster (card-free substitute for managed K8s). CI/CD wired
+for the new service; **not yet deployed to the VPS** — deliberately held until MongoDB Atlas and
+Grafana Cloud accounts exist. See **"Project 2 — microservices + cloud-native deploy"**.
 
-> ✅ **Everything is pushed and deployed.** `master` and `origin/master` match, and CI/CD was green on every push this session. The repo is **still private** — see interlude item C.
+> ⚠️ **Not yet pushed this session** — see the Project 2 section for what's ready to commit. The
+> repo is **still private** — see interlude item C.
 
 ## 🚀 LIVE DEPLOYMENT
 
@@ -513,6 +522,73 @@ schemes before and after.
 `docs/Full_Stack_Developer_Transition_Roadmap.md` -> break a slice into microservices +
 cloud-native deploy, plus the interview-preparation track.
 
+## Project 2 — microservices + cloud-native deploy
+
+**Same card-free constraint as Project 1** (no AWS/Azure/GCP account — all three require a
+card even for free-tier-only usage). Substitutes chosen for the specific roadmap items that
+need a major cloud, everything else built for real:
+
+| Roadmap ask | Substitute | Why |
+|---|---|---|
+| Own polyglot (NoSQL) database | **MongoDB Atlas free M0** | Genuinely no card required, a real managed cloud database |
+| Managed K8s (AKS/EKS) | **Local `kind` cluster** | The roadmap's own advice: "learn conceptually with kind/minikube before touching managed K8s" |
+| Centralized logging/monitoring | **Grafana Cloud free tier** | No card required (not started yet — blocked on account creation) |
+| Compute for the new service | Existing VPS (Docker) | Proven, zero new cost, consistent with Project 1 |
+| Message queue | Existing RabbitMQ on the VPS | Already proven; not resurrecting the CloudAMQP path per the standing AGENTS.md rule (no new reason to) |
+
+**Bounded context extracted: a Notifications service** (`notifications/`, Node.js +
+TypeScript) — consumes `MatchCompletedEvent`, records a notification document to its own
+MongoDB, independent of the API/worker's Postgres.
+
+**Real bug caught before writing any new code, by reading the existing pipeline first**: the
+worker published `MatchCompletedEvent` directly to a queue named `match-completed`, which the
+API's `MatchCompletedConsumer` already consumed from directly. Adding a second consumer to that
+same queue would have made RabbitMQ round-robin deliveries between the two — silently dropping
+roughly half of all completed-match SignalR pushes, the exact class of bug the interlude's bug
+audit (item B) was about eliminating. **Fixed at the architecture level**: the worker now
+publishes to a `match-completed-fanout` **exchange**; the API and the notifications service each
+declare and bind their own durable queue (`match-completed-api`, `match-completed-notifications`)
+to it, so every subscriber gets every message independently. Verified via RabbitMQ's own message
+stats after a real submit (`deliver_get: 1`, `ack: 1` on both queues, not just one) — not assumed
+from the code alone.
+
+**Fully verified locally, three ways:**
+1. **Dev mode** (`npm run dev` against the existing local RabbitMQ + a new local Mongo container
+   in `infra/docker-compose.dev.yml`): real application submitted through the API, real
+   `Completed` status with a real Gemini score, and the notifications service independently wrote
+   a real document to Mongo for the same event — confirmed by querying Mongo directly, not by
+   trusting a log line.
+2. **The actual Docker image** (not just `npm run dev`): built via `docker compose build
+   notifications`, run standalone against the same real RabbitMQ/Mongo containers, same result.
+3. **A local Kubernetes cluster** (`kind`, see `notifications/k8s/README.md`): all three pods
+   (`mongo`, `rabbitmq`, `notifications`) reach `1/1 Ready`; a message published directly to the
+   fanout exchange from inside the cluster was consumed and a real document appeared in the
+   in-cluster Mongo. **The exact RabbitMQ cold-start race from Project 1 (Steps 23-26) reproduced
+   here too** — the notifications pod started before RabbitMQ's AMQP listener was ready, logged
+   several backoff retries, then connected once RabbitMQ was actually up. Confirmed by reading the
+   pod's own logs.
+
+**CI/CD wired, deliberately not yet touching the live VPS**: `ci.yml` gained a `notifications`
+job (build + a real test suite — 5 tests on the event-shape type guard, including a case that
+would catch the serialization casing changing). `cd.yml`'s build matrix gained a fourth image
+(`ghcr.io/.../ai-jobsearch-copilot-notifications`). This is safe to have pushed: the VPS's own
+`docker-compose.yml` and `deploy.sh` (a **hardcoded** container list, not a dynamic read of
+whatever's in any compose file) both live only on the VPS, manually maintained — pushing to
+master builds and publishes the new image but does not deploy it anywhere until someone
+deliberately updates the VPS's own files. That deliberate step is being held until MongoDB Atlas
+is actually configured — wiring an unconfigured Mongo connection into the VPS's healthcheck-gated
+deploy would hang or fail `deploy.sh`'s health-wait for the *whole* stack, not just the new
+service.
+
+**Still open:**
+- MongoDB Atlas account (blocking: production `MONGO_URI`, the VPS compose update, and — once
+  there's a real cluster — the actual Terraform provisioning of it).
+- Grafana Cloud account (blocking: centralized logging/monitoring).
+- Terraform for real this time (Atlas provider once the account exists; VPS `remote-exec` this
+  time in an actual Claude Code terminal, where AGENTS.md already notes the SSH tooling failure
+  that blocked Project 1 likely doesn't apply).
+- The VPS-side wiring itself (compose file, `deploy.sh`'s container list, secrets) once Atlas is
+  ready.
 
 ## Known Gotchas
 

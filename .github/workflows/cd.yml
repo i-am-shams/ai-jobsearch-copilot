@@ -29,6 +29,8 @@ jobs:
             dockerfile: worker/JobCopilot.Worker/Dockerfile
           - image: frontend
             dockerfile: frontend/Dockerfile
+          - image: notifications
+            dockerfile: notifications/Dockerfile
     steps:
       - uses: actions/checkout@v4
       - name: Log in to GitHub Container Registry

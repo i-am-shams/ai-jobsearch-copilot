@@ -1,0 +1,65 @@
+# The actual point of this manifest set: the extracted service, running as a
+# real Kubernetes Deployment with liveness/readiness probes hitting the same
+# /health and /health/ready endpoints the Docker Compose healthcheck uses
+# (see src/health.ts) - one implementation, two orchestrators reading it the
+# same way. image: pullPolicy Never because this demo loads the image
+# straight into the kind node (`kind load docker-image`) rather than
+# round-tripping through a registry.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications
+  namespace: jobcopilot-notifications
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notifications
+  template:
+    metadata:
+      labels:
+        app: notifications
+    spec:
+      containers:
+        - name: notifications
+          image: ai-jobsearch-copilot-notifications:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8081
+          env:
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USERNAME
+              value: jobcopilot
+            - name: RABBITMQ_PASSWORD
+              value: devpassword
+            - name: MONGO_URI
+              value: mongodb://mongo:27017
+            - name: MONGO_DB_NAME
+              value: jobcopilot_notifications
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications
+  namespace: jobcopilot-notifications
+spec:
+  selector:
+    app: notifications
+  ports:
+    - port: 8081
+      targetPort: 8081

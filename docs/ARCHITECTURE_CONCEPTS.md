@@ -1044,3 +1044,75 @@ the frontend was throwing the result away and asking again.
 - `docs/HANDOVER.md`, `docs/ARCHITECTURE_CONCEPTS.md` — sanitized with a placeholder legend.
 - `my-portfolio/data/buildProjects.js`, `my-portfolio/components/BuildProject.js` — the
   Engineering Deep Dive section.
+
+## Project 2, Step 1 — Notifications service (fanout exchange, polyglot persistence)
+
+### Architectural Viewpoint & Arguments
+
+**Fanout exchange over direct-to-queue publishing.** The worker previously published
+`MatchCompletedEvent` straight to a queue named `match-completed` — fine when there was exactly
+one subscriber (the API's `MatchCompletedConsumer`), because a queue is a point-to-point
+handoff: each message goes to *one* consumer. The moment a second, independent subscriber
+(this notifications service) needs the *same* event, that stops being true — bind a second
+consumer to the same queue and RabbitMQ round-robins deliveries between them, so each consumer
+now only sees roughly half of all messages, silently. This is precisely the interlude bug-audit
+class of failure (item B: SignalR degrading unnoticed) recurring at the architecture level
+instead of a code level. **The fix**: the worker publishes to a fanout **exchange**
+(`match-completed-fanout`); every subscriber declares and binds *its own* durable queue to that
+exchange. A fanout exchange copies every message to every bound queue — the defining trait of
+event-driven pub/sub versus point-to-point messaging, and the reason RabbitMQ (and message
+brokers generally) separates the "exchange" concept from the "queue" concept at all rather than
+letting publishers target a queue directly.
+
+**Why this was caught before writing any new code**: the plan going in was "add a consumer to
+the `match-completed` queue" — the obvious-sounding approach, and wrong. Reading
+`MatchCompletedConsumer.cs` first (not assuming its shape from the event contract alone) is what
+surfaced that it already owned that queue directly. The project's standing verification
+discipline — read the actual code, don't assume — applies as much to *planning* a change as to
+verifying one after the fact.
+
+**Polyglot persistence, for a real reason, not as a checkbox.** The notifications service owns
+its own MongoDB database, entirely separate from the API/worker's Postgres. This isn't "use a
+different database because the roadmap says polyglot" — a notification/webhook log is a stream
+of independent, schema-loose event records with no relational structure to the `Applications`/
+`MatchResults` tables (no joins, no foreign keys, no transactional consistency needed with the
+rest of the system). That shape is a better fit for a document store than for another table in
+an already-relational schema, and giving the service its own database is also what makes it
+*independently deployable* — it doesn't need read access to the API's Postgres, doesn't share a
+migration history with it, and could be scaled, backed up, or replaced without touching the
+core application at all. Sharing Postgres would have been the easier build and the wrong
+boundary.
+
+### Plain-Language Definitions
+
+- **Exchange vs. queue** — a queue holds messages for delivery to *a* consumer; an exchange is a
+  routing rule that decides which queue(s) a published message is copied into. Publishers
+  always target an exchange (even the "default" direct-to-queue publish is really a publish to
+  the nameless default exchange with the queue name as routing key) — the distinction matters
+  once more than one queue needs the same message.
+- **Fanout exchange** — the simplest exchange type: ignores the routing key entirely and copies
+  every published message to every queue bound to it. The right choice when every subscriber
+  needs every message, as opposed to a topic/direct exchange, which route selectively.
+- **Bounded context** — a boundary (from Domain-Driven Design) around a chunk of a system that
+  owns its own data and rules, and talks to everything outside it only through explicit
+  contracts (here, an event on a queue) — not shared database access. The notifications service
+  is deliberately given no other way to reach the rest of the system.
+- **Polyglot persistence** — using a different kind of database per service based on that
+  service's actual data shape, instead of one database technology for the whole system.
+
+### File Mapping
+
+- `worker/JobCopilot.Worker/Worker.cs` — `PublishCompleted` now publishes to the
+  `match-completed-fanout` exchange instead of the `match-completed` queue directly.
+- `api/JobCopilot.Api/Messaging/MatchCompletedConsumer.cs` — declares and binds its own
+  `match-completed-api` queue to the fanout exchange, consumes from that instead.
+- `notifications/src/rabbitmq.ts` — the third subscriber: binds `match-completed-notifications`
+  to the same exchange, same manual-ack/nack-without-requeue discipline as the two C# consumers.
+- `notifications/src/events.ts` — the event contract mirrored in TypeScript, matching
+  `System.Text.Json`'s default (PascalCase, not camelCase) serialization exactly.
+- `notifications/src/mongo.ts`, `handler.ts` — the service's own database and the actual
+  write (a notification record per completed/failed match).
+- `notifications/src/health.ts` — the same liveness/readiness split as the API and worker
+  (Step 34), reused for a third time now that it's a proven pattern in this codebase.
+- `notifications/k8s/` — a self-contained local `kind` manifest set (own throwaway Mongo/RabbitMQ
+  plus the real service image), the roadmap's card-free substitute for managed Kubernetes.

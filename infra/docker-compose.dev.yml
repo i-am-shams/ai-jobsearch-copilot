@@ -19,5 +19,17 @@ services:
       RABBITMQ_DEFAULT_USER: jobcopilot
       RABBITMQ_DEFAULT_PASS: devpassword
 
+  # Local dev only. Production uses MongoDB Atlas's free tier (Project 2 -
+  # own polyglot database for the notifications service, kept separate from
+  # the API/worker's Postgres) - no local credentials needed here since this
+  # container isn't exposed to anything but the notifications service itself.
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+
 volumes:
   pgdata:
+  mongodata:

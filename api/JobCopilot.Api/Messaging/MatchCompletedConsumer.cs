@@ -37,7 +37,17 @@ public class MatchCompletedConsumer : BackgroundService
         // logic - see that file for the full rationale.
         _connection = await ConnectWithRetryAsync(factory, stoppingToken);
         _channel = _connection.CreateModel();
-        _channel.QueueDeclare("match-completed", durable: true, exclusive: false, autoDelete: false);
+
+        // MatchCompletedEvent now fans out to more than one independent subscriber
+        // (this consumer, for SignalR, and - as of Project 2 - the notifications
+        // service), so the worker publishes to a fanout exchange rather than
+        // directly to a queue. This consumer owns its own durable queue, bound to
+        // that exchange, so it keeps getting every message regardless of who else
+        // is also subscribed - sharing one queue between independent consumers
+        // would have RabbitMQ round-robin deliveries between them instead.
+        _channel.ExchangeDeclare("match-completed-fanout", ExchangeType.Fanout, durable: true);
+        _channel.QueueDeclare("match-completed-api", durable: true, exclusive: false, autoDelete: false);
+        _channel.QueueBind("match-completed-api", "match-completed-fanout", routingKey: "");
 
         var consumer = new EventingBasicConsumer(_channel);
         consumer.Received += async (_, ea) =>
@@ -68,7 +78,7 @@ public class MatchCompletedConsumer : BackgroundService
                 }
             }
         };
-        _channel.BasicConsume("match-completed", autoAck: false, consumer);
+        _channel.BasicConsume("match-completed-api", autoAck: false, consumer);
         _logger.LogInformation("MatchCompletedConsumer started and listening");
 
         await Task.Delay(Timeout.Infinite, stoppingToken);

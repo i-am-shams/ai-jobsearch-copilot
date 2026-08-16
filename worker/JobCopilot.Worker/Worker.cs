@@ -40,7 +40,16 @@ public class Worker : BackgroundService
         _channel = _connection.CreateModel();
 
         _channel.QueueDeclare("match-requests", durable: true, exclusive: false, autoDelete: false);
-        _channel.QueueDeclare("match-completed", durable: true, exclusive: false, autoDelete: false);
+
+        // MatchCompletedEvent has more than one independent subscriber (the API, for
+        // SignalR, and - as of Project 2 - the notifications service), so this is a
+        // fanout exchange rather than a direct-to-queue publish. Each subscriber
+        // declares and binds its own durable queue (see MatchCompletedConsumer.cs and
+        // the notifications service) so every subscriber gets every message,
+        // independently. A direct-to-queue publish here would have RabbitMQ
+        // round-robin deliveries between whichever consumers happened to be bound to
+        // the same queue - silently dropping roughly half of them for each.
+        _channel.ExchangeDeclare("match-completed-fanout", ExchangeType.Fanout, durable: true);
         _channel.BasicQos(0, 1, false); // one message at a time
 
         var consumer = new EventingBasicConsumer(_channel);
@@ -212,7 +221,8 @@ public class Worker : BackgroundService
         var body = Encoding.UTF8.GetBytes(json);
         var props = _channel!.CreateBasicProperties();
         props.Persistent = true;
-        _channel.BasicPublish("", "match-completed", props, body);
+        // Fanout ignores the routing key - every bound queue gets a copy.
+        _channel.BasicPublish("match-completed-fanout", "", props, body);
     }
 
     public override void Dispose()

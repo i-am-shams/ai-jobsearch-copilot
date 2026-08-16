@@ -44,3 +44,22 @@ jobs:
       - name: Test
         run: npm run test
         working-directory: frontend
+
+  notifications:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: notifications/package-lock.json
+      - name: Install
+        run: npm ci
+        working-directory: notifications
+      - name: Type check and build
+        run: npm run build
+        working-directory: notifications
+      - name: Test
+        run: npm test
+        working-directory: notifications

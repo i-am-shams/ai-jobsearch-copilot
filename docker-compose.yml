@@ -94,6 +94,39 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # Project 2: an independent service on its own database (MongoDB, not
+  # Postgres - the polyglot-persistence piece), talking to the rest of the
+  # stack only over the fanout exchange the worker publishes
+  # MatchCompletedEvent to (see Worker.cs's PublishCompleted and
+  # notifications/src/rabbitmq.ts). No direct dependency on the API or
+  # worker's code or database at all - that's what "independent" means here.
+  notifications:
+    build:
+      context: .
+      dockerfile: notifications/Dockerfile
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USERNAME: jobcopilot
+      RABBITMQ_PASSWORD: devpassword
+      # Points at MongoDB Atlas's free tier in every real environment (local
+      # full-stack included) - there is no Postgres-style "just run it in
+      # this compose file with no published port" option for the DB this
+      # service owns, by design: it's the one piece meant to demonstrate an
+      # actual managed-cloud service, not a container playing the part of
+      # one.
+      MONGO_URI: ${MONGO_URI}
+      MONGO_DB_NAME: jobcopilot_notifications
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8081/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
   frontend:
     build:
       context: .
