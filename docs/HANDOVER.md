@@ -34,8 +34,9 @@ this project's own containers only after a real bug (unscoped discovery was ship
 caught and fixed live. See **"Project 2 — microservices + cloud-native deploy"**.
 
 > ✅ **Everything is pushed and deployed.** `master` and `origin/master` match, CI/CD was green,
-> and the notifications + Alloy observability services are both live on the VPS. The repo is
-> **still private** — see interlude item C. **Still open in Project 2**: real Terraform, and
+> and the notifications + Alloy observability services are both live on the VPS. Real Terraform
+> (`terraform/atlas`, `terraform/vps`) now covers Atlas and the VPS deploy path too. The repo is
+> **still private** — see interlude item C. **Still open in Project 2**:
 > `docs/architecture.mmd`/`.png` still need the notifications/Atlas/Grafana pass (deliberately
 > deferred until all three cross-cutting pieces existed).
 
@@ -220,7 +221,7 @@ Original plan was Terraform + Azure. **Changed**: AWS/Azure/GCP all require a cr
 | Postgres | Containerized on the VPS | Same `docker-compose.yml`, no host port published — internal only |
 | Message queue | Containerized on the VPS (RabbitMQ) | Same as above, no host port published |
 | TLS | Let's Encrypt, via the co-hosted project's existing wildcard cert (`*.dentflowbd.com`) | Free, no card. **No new cert issuance needed** — confirmed via `openssl x509` before relying on it |
-| IaC | **Not implemented** — SSH tooling failure led to guided manual deployment instead (see Week 4 Plan Pivot) | Real gap, honestly documented, candidate Future Addition |
+| IaC | **Terraform** (`terraform/atlas`, `terraform/vps`) — see "Project 2" section below | Atlas resources imported (never apply-created); VPS deploy path via `file`/`remote-exec` provisioners, `.env` deliberately excluded (see `terraform/vps/README.md`) |
 **Reference doc:** `Full_Stack_Developer_Transition_Roadmap.md` (roadmap), `ARCHITECTURE_CONCEPTS.md` (per-step architectural reasoning + concept definitions — read this for *why*, this file for *what/status*)
 
 ---
@@ -620,10 +621,46 @@ the public API completed with a real Gemini score, and the exact same event inde
 a real document in MongoDB Atlas, confirmed by querying Atlas directly (`mongosh --eval
 'db.notifications.findOne(...)'`), not by trusting a log line.
 
-**Still open:**
-- Terraform for real this time (Atlas provider now that a real cluster exists; VPS `remote-exec`
-  this time in an actual Claude Code terminal, where AGENTS.md already notes the SSH tooling
-  failure that blocked Project 1 likely doesn't apply).
+### Terraform — real IaC now covers Atlas and the VPS deploy path
+
+Two modules, `terraform/atlas/` and `terraform/vps/` (each has its own README with full detail).
+Confirms the SSH-tooling failure that blocked Project 1 (see AGENTS.md) genuinely doesn't apply in
+a real Claude Code terminal — direct SSH worked immediately, no workaround needed this time.
+
+**`terraform/atlas`**: manages the M0 cluster, the VPS's Network Access IP entry, and the
+notifications DB user — all **imported**, never apply-created, since this cluster already holds
+real data. Checked the cluster's live shape via a data source *before* writing the resource block,
+rather than assuming: Atlas has been silently auto-migrating shared-tier clusters to a newer "Flex"
+type since Jan 2025, and this one turned out not to have been (confirmed, not assumed).
+`terraform plan` after import caught three real drifts between assumed and actual config before
+anything was touched — including a genuine security finding, left deliberately unfixed here:
+**the notifications DB user has `atlasAdmin` on `admin`** (full project admin) instead of a scoped
+`readWrite` on just its own database. Named honestly in `terraform/atlas/README.md` as a real gap,
+not silently tightened — changing a live credential's privileges is a separate decision from
+adopting Terraform.
+
+**`terraform/vps`**: replaces the manual "SSH in and hand-edit / re-upload deploy.sh" workflow with
+real `file` + `remote-exec` provisioners. Added `deploy/docker-compose.vps.yml` to the repo as a
+new committed, canonical source (downloaded byte-for-byte from the live VPS first, so the first
+apply changes nothing) — this file, plus `deploy/deploy.sh` and `observability/alloy/config.alloy`,
+are now what Terraform pushes on every apply, with content-hash triggers so a future edit to any of
+them forces a real redeploy. **Deliberately does not manage `/opt/jobcopilot/.env`** — those are
+production secrets (Postgres/RabbitMQ/JWT/Gemini) this session has no copies of, and templating
+them from Terraform on a first apply is exactly the kind of action where one transcription slip
+(already happened twice this session with other credentials, both caught before landing) could
+break production auth or the DB connection outright. `.env` stays hand-maintained on the VPS.
+
+**Verified, not just "apply succeeded"**: captured a full `docker ps` uptime baseline before
+applying, applied, then confirmed every container's uptime was *identical* after — real proof of
+zero restarts, not an assumption that a no-op plan meant a no-op apply. `md5sum`-verified the three
+uploaded files matched their repo source exactly, both before and after. Re-ran the public
+`/health` smoke test after apply.
+
+**Blocked from running `terraform apply` against the VPS directly** (Claude Code's own auto-mode
+classifier treats writes to the VPS as high-risk) — same restriction hit earlier with `scp`. Worked
+around it the same way: gave the user the exact command, they ran it, pasted the result back for
+verification. `terraform apply` against the Atlas provider (an API, not SSH) was not blocked and
+ran directly.
 
 ### Grafana Cloud — live, metrics and logs flowing from the VPS
 

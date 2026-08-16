@@ -1,0 +1,187 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: jobcopilot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jobcopilot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: jobcopilot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobcopilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: jobcopilot-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: jobcopilot
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ghcr.io/i-am-shams/ai-jobsearch-copilot-api:latest
+    container_name: jobcopilot-api
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=${POSTGRES_PASSWORD}"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: jobcopilot
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      Jwt__Key: ${JWT_KEY}
+      Jwt__Issuer: "JobCopilotApi"
+      Jwt__Audience: "JobCopilotClient"
+      Jwt__ExpiryMinutes: "60"
+    # Hits the LIVENESS endpoint, not readiness: Docker restarts containers that
+    # fail this, and killing a healthy API because Postgres blipped would turn a
+    # recoverable dependency hiccup into an outage of its own.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    image: ghcr.io/i-am-shams/ai-jobsearch-copilot-worker:latest
+    container_name: jobcopilot-worker
+    restart: unless-stopped
+    environment:
+      ConnectionStrings__Default: "Host=postgres;Port=5432;Database=jobcopilot;Username=jobcopilot;Password=${POSTGRES_PASSWORD}"
+      RabbitMq__Host: rabbitmq
+      RabbitMq__Port: "5672"
+      RabbitMq__Username: jobcopilot
+      RabbitMq__Password: ${RABBITMQ_PASSWORD}
+      Gemini__ApiKey: ${GEMINI_API_KEY}
+      Worker__HeartbeatFile: /tmp/worker-heartbeat
+    # The worker has no HTTP surface, so liveness is "has it written a fresh
+    # heartbeat recently?" - and it only writes one while its RabbitMQ connection
+    # is genuinely open, so a worker that is running but silently disconnected
+    # (consuming nothing) shows up as unhealthy instead of fine. The $$ escaping
+    # is required: a single $ is swallowed by Compose's own interpolation.
+    healthcheck:
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /tmp/worker-heartbeat) )) -lt 60"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Project 2: independent bounded context, own MongoDB Atlas database - no
+  # dependency on postgres, no shared code path with api/worker beyond the
+  # match-completed-fanout exchange they all bind their own queue to.
+  notifications:
+    image: ghcr.io/i-am-shams/ai-jobsearch-copilot-notifications:latest
+    container_name: jobcopilot-notifications
+    restart: unless-stopped
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USERNAME: jobcopilot
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      MONGO_URI: ${MONGO_URI}
+      MONGO_DB_NAME: jobcopilot_notifications
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8081/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  frontend:
+    image: ghcr.io/i-am-shams/ai-jobsearch-copilot-frontend:latest
+    container_name: jobcopilot-frontend
+    restart: unless-stopped
+    # nginx:alpine has busybox wget (no curl). 127.0.0.1 rather than "localhost"
+    # is deliberate: nginx listens on 0.0.0.0:80 (IPv4 only) but "localhost"
+    # resolves to ::1 first inside the container, which yields a flat
+    # connection-refused and leaves the container permanently unhealthy.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Upgraded from a plain list-form depends_on: the frontend proxies /api and
+    # /hubs to the API, so starting it first just serves 502s - which is exactly
+    # what the first automated deploy hit.
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - default
+      - <other-app>-private
+
+  # Observability leg of Project 2: ships this stack's metrics (host + every
+  # container) and logs (every container's stdout/stderr) to Grafana Cloud.
+  # Independent of the app - nothing here is a dependency of anything else,
+  # so it can fail without affecting the actual product.
+  alloy:
+    image: grafana/alloy:latest
+    container_name: jobcopilot-alloy
+    restart: unless-stopped
+    command:
+      - run
+      # 0.0.0.0 here is safe: the host-side port mapping below is still
+      # loopback-only. Binding to 127.0.0.1 here would mean "loopback of the
+      # container's own network namespace" - unreachable through the port
+      # mapping from the host at all (found the hard way locally first: same
+      # class of bug as the frontend nginx/wget mismatch above).
+      - --server.http.listen-addr=0.0.0.0:12345
+      - /etc/alloy/config.alloy
+    ports:
+      - "127.0.0.1:12345:12345"
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # Read-only Docker socket: needed by both cAdvisor (per-container
+      # metrics) and the Docker log/discovery components. Same trust boundary
+      # the deploy user already sits in (docker group = root-equivalent on
+      # this host), not a new privilege being introduced.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Host metrics: bind-mounted read-only, paths matched to config.alloy's
+      # procfs_path/sysfs_path/rootfs_path.
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro
+    environment:
+      GRAFANA_CLOUD_METRICS_URL: ${GRAFANA_CLOUD_METRICS_URL}
+      GRAFANA_CLOUD_METRICS_USER: ${GRAFANA_CLOUD_METRICS_USER}
+      GRAFANA_CLOUD_LOGS_URL: ${GRAFANA_CLOUD_LOGS_URL}
+      GRAFANA_CLOUD_LOGS_USER: ${GRAFANA_CLOUD_LOGS_USER}
+      GRAFANA_CLOUD_API_KEY: ${GRAFANA_CLOUD_API_KEY}
+    # No healthcheck: the official image ships no curl/wget (open upstream
+    # issue), so a CMD-based check can't be written honestly. deploy.sh's
+    # wait_for_healthy() already treats a container with no healthcheck as a
+    # non-fatal warning, so this doesn't block deploys on the other services.
+
+networks:
+  default:
+    name: jobcopilot-internal
+  <other-app>-private:
+    external: true
+    name: <other-app>_<other-app>-private
+
+volumes:
+  pgdata:

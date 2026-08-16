@@ -6,3 +6,13 @@ dist/
 *.user
 *.log
 logs/
+
+# Terraform: state can contain resource attributes considered sensitive
+# (e.g. Atlas connection details), and *.tfvars is where real credentials
+# (Atlas API keys, the VPS SSH key path) live locally - same discipline as
+# the root .env (see AGENTS.md: never put real secrets in this git repo).
+terraform/**/.terraform/
+terraform/**/*.tfstate
+terraform/**/*.tfstate.*
+terraform/**/*.tfvars
+terraform/**/crash.log
