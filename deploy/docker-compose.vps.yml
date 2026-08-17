@@ -132,7 +132,7 @@ services:
         condition: service_healthy
     networks:
       - default
-      - <other-app>-private
+      - other-app-private
 
   # Observability leg of Project 2: ships this stack's metrics (host + every
   # container) and logs (every container's stdout/stderr) to Grafana Cloud.
@@ -179,9 +179,9 @@ services:
 networks:
   default:
     name: jobcopilot-internal
-  <other-app>-private:
+  other-app-private:
     external: true
-    name: <other-app>_<other-app>-private
+    name: __OTHER_APP_NETWORK_NAME__
 
 volumes:
   pgdata:

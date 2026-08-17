@@ -47,10 +47,21 @@ Create `terraform.tfvars` (gitignored) with:
 
 ```
 vps_ssh_private_key_path = "C:/Users/<you>/.ssh/id_ed25519"
+vps_user                 = "<the real SSH deploy user>"
+other_app_network_name   = "<the co-hosted app's real external Docker network name>"
 ```
 
-(`vps_host`, `vps_user`, `compose_dir` all have defaults matching the real
-deployment and don't need overriding.)
+(`vps_host` and `compose_dir` have defaults matching the real deployment and
+don't need overriding - the VPS's address is already discoverable from the
+live domain's DNS, so committing it carries no real cost. `vps_user` and
+`other_app_network_name` deliberately have no default: the SSH username and
+the fact that this box also runs a second, unrelated production app are not
+otherwise discoverable, so neither should be a literal in a public repo.
+`deploy/docker-compose.vps.yml` carries the literal token
+`__OTHER_APP_NETWORK_NAME__` for this reason - `main.tf` substitutes it via
+a targeted `replace()`, not `templatefile()` (the file already uses `${VAR}`
+syntax for Docker Compose's own runtime secrets, which `templatefile()`
+would also try, and fail, to resolve).)
 
 ## Verified
 

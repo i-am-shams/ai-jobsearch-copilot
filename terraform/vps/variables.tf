@@ -5,9 +5,13 @@ variable "vps_host" {
 }
 
 variable "vps_user" {
-  description = "The unprivileged SSH deploy user (docker group, no sudo needed for docker commands)."
+  description = "The unprivileged SSH deploy user (docker group, no sudo needed for docker commands). No default deliberately - supply via terraform.tfvars (gitignored), not committed."
   type        = string
-  default     = "<deploy-user>"
+}
+
+variable "other_app_network_name" {
+  description = "The real external Docker network name of the co-hosted app's nginx, that this project's frontend joins to reach it (see deploy/docker-compose.vps.yml). No default deliberately - it names a specific unrelated production app co-hosted on the same VPS; supply via terraform.tfvars (gitignored), not committed."
+  type        = string
 }
 
 variable "vps_ssh_private_key_path" {

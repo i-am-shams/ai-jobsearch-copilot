@@ -10,7 +10,19 @@
 # Deliberately does NOT manage /opt/jobcopilot/.env - see README.md for why.
 
 locals {
-  compose_content       = file("${path.module}/../../deploy/docker-compose.vps.yml")
+  # A targeted replace(), not templatefile(): the compose file already uses
+  # ${VAR} syntax extensively for Docker Compose's own runtime secret
+  # substitution (POSTGRES_PASSWORD, GEMINI_API_KEY, etc., resolved from
+  # .env on the VPS, never by Terraform) - templatefile() would demand every
+  # one of those resolve as a Terraform var too, which is wrong. The
+  # committed file instead carries the non-colliding literal token
+  # __OTHER_APP_NETWORK_NAME__ for the one value Terraform *should* fill in:
+  # the co-hosted app's real network name, kept out of the public repo.
+  compose_content       = replace(
+    file("${path.module}/../../deploy/docker-compose.vps.yml"),
+    "__OTHER_APP_NETWORK_NAME__",
+    var.other_app_network_name
+  )
   deploy_sh_content     = file("${path.module}/../../deploy/deploy.sh")
   alloy_config_content  = file("${path.module}/../../observability/alloy/config.alloy")
 }
