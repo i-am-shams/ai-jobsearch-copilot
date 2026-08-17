@@ -155,7 +155,6 @@ A résumé is untrusted input that gets concatenated into a prompt. Input side: 
 Listed because they're real, not because they're finished.
 
 - **`.env` secrets aren't Terraform-managed.** `terraform/vps` deploys `docker-compose.yml`, `deploy.sh`, and the observability config, but deliberately leaves the VPS's `.env` (Postgres/RabbitMQ/JWT/Gemini secrets) hand-maintained — templating and overwriting live secrets on a first apply was judged a worse risk than the manual step it would replace. Ansible is arguably still the better fit for configuring an existing server generally; Terraform's `remote-exec` provisioners are described by HashiCorp itself as a last resort.
-- **The notifications database user has broader privileges than it needs** (`atlasAdmin` on `admin`, not a scoped `readWrite` on its own database) — found via Terraform import, named honestly rather than silently tightened, since narrowing a live credential's access is a separate decision from adopting IaC.
 - **Deploys pull `:latest`, not the commit SHA.** Images *are* tagged with both, so a rollback is possible, but it means editing the VPS compose by hand. Pinning properly requires the forced command to accept a validated argument — which is the correct fix, not a hard one.
 - **Single API instance.** Migrations run on startup, which is correct for one instance and wrong for several.
 - **Rate limiting is per-instance and in-memory.** A distributed limiter would be needed behind more than one API.
