@@ -55,6 +55,31 @@ caught and fixed live. See **"Project 2 — microservices + cloud-native deploy"
 > repo is now public** — see interlude item C. **Project 2's roadmap items are now all done**;
 > see "Project 2 — microservices + cloud-native deploy" for the full detail on each.
 
+**Next: following `docs/Full_Stack_Developer_Transition_Roadmap.md` (private, gitignored, not in
+this repo — see interlude item C).** Its Section 3 project plan maps onto this codebase as:
+Project 1 (this repo) essentially done except one explicitly-called-for piece that was deferred
+and never built — **pgvector-based semantic embeddings for match scoring**; Project 2
+(microservices + cloud-native) done, with the roadmap's managed-cloud asks (ECS/AKS, CloudWatch)
+deliberately substituted for card-free equivalents already documented above; Project 3 (a
+greenfield multi-tenant storefront — GraphQL, Stripe, real K8s with autoscaling, staging+prod
+CI/CD, load testing) **not started at all**, a multi-week undertaking on its own.
+
+**pgvector work is in progress but deliberately paused, not on `master`.** Committed to its own
+branch, `wip/pgvector-semantic-embeddings` (local only, not pushed), specifically so it's
+cherry-pickable later without polluting `master`. What's done: `Pgvector`/`Pgvector.EntityFrameworkCore`
+added (pinned to the 0.2.x/0.3.1 line — 0.3.0+ needs Npgsql EF Core 9.x, incompatible with this
+project's pinned 8.0.10), `MatchResult` gained `SemanticScore`/`ResumeEmbedding`/`JobDescriptionEmbedding`
+(768 dims via Gemini's `output_dimensionality`), a new `EmbeddingService` (worker) calling Gemini's
+`embedContent`, wired into `Worker.cs` non-fatally (an embedding failure logs a warning, doesn't
+fail the match), and `SemanticScore` threaded through `MatchCompletedEvent`/the SignalR push/the
+notifications service's TypeScript contract. **Not done**: no EF Core migration yet; the Postgres
+image hasn't been switched from `postgres:16` to `pgvector/pgvector:pg16` anywhere (working tree,
+dev compose, or the VPS's Terraform-managed compose) — the `vector` extension doesn't exist in the
+current image at all; the frontend hasn't been touched; zero verification of any kind. The eventual
+production Postgres image swap will need `terraform apply` for the VPS module, which is blocked
+for direct execution in this environment (same restriction as the RabbitMQ queue deletion earlier)
+and will need to go through the user. See that branch's commit message for the full detail.
+
 ## 🚀 LIVE DEPLOYMENT
 
 **https://jobcopilot.dentflowbd.com** — running on the user's own VPS (`<vps-host>`), alongside their other production project (name withheld), sharing its nginx via a Docker external network, zero disruption to it. Full pipeline live-verified: auth, async matching (Postgres/RabbitMQ/worker/Gemini all containerized on the VPS), and live SignalR push confirmed in a real browser through two layers of nginx.
