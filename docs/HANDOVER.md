@@ -24,15 +24,16 @@
 
 **Last updated:** Polish-and-publish interlude fully complete, including publication (**C**) — the
 repo is now public. See **"Polish-and-publish interlude — status"** for the full A-F breakdown.
-**Every item in "Future Additions" below is now resolved** — dead-letter queues, the live
-`Analysing` status push, a Grafana dashboard, and the Atlas DB user scope-down are all done, each
-independently verified against real running infra (not just built). The Atlas fix is live and
-confirmed in production. **The other three are committed locally but deliberately not yet pushed**
-— `master`/`origin/master` do not currently match. This repo auto-deploys on push
-(Step 35), and three pre-existing RabbitMQ queues on the VPS need deleting via the management UI
-before the DLQ change can deploy without a crash-loop (RabbitMQ rejects redeclaring an existing
-queue with new arguments) — push is held until that's coordinated. See the DLQ entry in "Future
-Additions" for the exact queue names.
+**Every item in "Future Additions" below is now resolved and deployed** — dead-letter queues, the
+live `Analysing` status push, a Grafana dashboard, and the Atlas DB user scope-down, each
+independently verified against real running infra (not just built). The RabbitMQ queue-redeclare
+gotcha (`PRECONDITION_FAILED` on the three pre-existing queues, since this repo auto-deploys on
+push) was handled by deleting `match-requests`/`match-completed-api`/`match-completed-notifications`
+via `rabbitmqadmin` (over SSH, no port exposed for the management UI itself) immediately before
+pushing. **Post-deploy verification, not just CD-green**: all 9 queues (3 originals + their
+`.dlq`s + the new `match-processing` + its `.dlq`) confirmed present via `rabbitmqctl list_queues`;
+all 7 containers report healthy; a real submitted application against the live production site
+was caught mid-flight in `Processing` status by polling, then reached `Completed` normally.
 **Project 2's first bounded context is live in production**: a Notifications service
 (`notifications/`, Node.js+TypeScript, own MongoDB Atlas) extracted off a newly fanout-exchanged
 RabbitMQ topology (a real bug — a second consumer silently splitting the API's messages — caught
@@ -45,11 +46,9 @@ this project's own containers only after a real bug (unscoped discovery was ship
 `<other-app>` app's data too, and its log backlog was silently dropping this project's own logs) was
 caught and fixed live. See **"Project 2 — microservices + cloud-native deploy"**.
 
-> ⚠️ **Not everything is pushed.** The Atlas DB user scope-down is live and verified in
-> production. Dead-letter queues, the `Analysing` status push, and the Grafana dashboard are
-> committed locally but held back pending a coordinated RabbitMQ queue deletion on the VPS (see
-> "Last updated" above) — `master` and `origin/master` currently diverge. Everything *else* below
-> (notifications + Alloy observability services) is live on the VPS from earlier work. Real Terraform
+> ✅ **Everything is pushed and deployed.** `master` and `origin/master` match, CD was green, and
+> post-deploy verification against the live production site confirms all of it actually works
+> (see "Last updated" above for specifics). Real Terraform
 > (`terraform/atlas`, `terraform/vps`) now covers Atlas and the VPS deploy path too, and
 > `docs/architecture.mmd`/`.png` (plus the root `README.md`) now draw the full picture —
 > notifications, the fanout exchange, Atlas, and Grafana Cloud all in one pass, as planned. **The
@@ -769,8 +768,8 @@ counters, zero `*_failed_total`, and confirmed via `docker ps` that all 6 jobcop
 
 - ~~Node.js polyglot piece~~ — **done, Project 2**: the notifications service (`notifications/`) is exactly this — a Node.js/TypeScript service consuming `MatchCompletedEvent`.
 - ~~Failed matches don't push a live SignalR update~~ — **done** in the interlude's bug audit, verified live against an invalid Gemini key.
-- ~~`Analysing` is unreachable in the UI~~ — **done**: the worker now publishes `MatchProcessingEvent` (own direct queue, `match-processing` — deliberately not the `match-completed-fanout` exchange, since the notifications service must never see a non-terminal state) right after writing `Processing` to the database. The API relays it over the same `MatchCompleted` SignalR method the frontend already listened on generically (`applyMatchPush`/`parseStatus` already handled an arbitrary status string with null score/analysis/completedAt — zero frontend changes needed). **Live-verified in a real browser** (Playwright/Edge): registered a user, submitted an application, watched the status pill actually render the spinning "Analysing" state before the terminal push, zero page reloads, zero console errors.
-- ~~No dead-letter queue~~ — **done**: every consumer queue (`match-requests`, `match-completed-api`, `match-completed-notifications`, `match-processing`) now declares `x-dead-letter-exchange` pointing at its own `<queue>.dlx`/`<queue>.dlq`. The existing `nack(requeue: false)` calls needed no code change — RabbitMQ routes a dead-lettered message there automatically. **Live-verified**, not just built: published a malformed poison message directly to both `match-requests` and `match-completed-notifications` against local dev RabbitMQ, confirmed each landed in its `.dlq` fully intact (payload + RabbitMQ's own `x-death` headers showing why/when), and confirmed the origin queue drained to zero rather than stalling. One real migration gotcha hit locally and worth knowing before deploying: RabbitMQ rejects redeclaring an existing queue with new arguments (`PRECONDITION_FAILED`) — the three existing queues on the VPS will need deleting (via the management UI, not `docker exec`) before this code can start cleanly there, exactly like the stale local dev queues this session had to clear.
+- ~~`Analysing` is unreachable in the UI~~ — **done**: the worker now publishes `MatchProcessingEvent` (own direct queue, `match-processing` — deliberately not the `match-completed-fanout` exchange, since the notifications service must never see a non-terminal state) right after writing `Processing` to the database. The API relays it over the same `MatchCompleted` SignalR method the frontend already listened on generically (`applyMatchPush`/`parseStatus` already handled an arbitrary status string with null score/analysis/completedAt — zero frontend changes needed). **Live-verified in a real browser** (Playwright/Edge) locally before deploying: registered a user, submitted an application, watched the status pill actually render the spinning "Analysing" state before the terminal push, zero page reloads, zero console errors. **Re-confirmed against production post-deploy** (by polling, not a browser this time): a real submitted application was caught in `Processing` status before reaching `Completed`.
+- ~~No dead-letter queue~~ — **done**: every consumer queue (`match-requests`, `match-completed-api`, `match-completed-notifications`, `match-processing`) now declares `x-dead-letter-exchange` pointing at its own `<queue>.dlx`/`<queue>.dlq`. The existing `nack(requeue: false)` calls needed no code change — RabbitMQ routes a dead-lettered message there automatically. **Live-verified**, not just built: published a malformed poison message directly to both `match-requests` and `match-completed-notifications` against local dev RabbitMQ, confirmed each landed in its `.dlq` fully intact (payload + RabbitMQ's own `x-death` headers showing why/when), and confirmed the origin queue drained to zero rather than stalling. One real migration gotcha, hit locally first and handled correctly before deploying: RabbitMQ rejects redeclaring an existing queue with new arguments (`PRECONDITION_FAILED`) — same as the stale local dev queues this session had to clear. The RabbitMQ management UI turned out to have no exposed port on the VPS at all (Step 32's hardening applies host-wide, not just externally), so the three pre-existing queues (`match-requests`, `match-completed-api`, `match-completed-notifications`) were deleted via `rabbitmqadmin` over `docker exec` instead, immediately before pushing. **Deployed and verified against production**: CD green, all 9 queues (3 originals + `.dlq`s + the new `match-processing` + its `.dlq`) confirmed via `rabbitmqctl list_queues`, all 7 containers healthy, and a real submitted application caught mid-flight in `Processing` status by polling before reaching `Completed`.
 - ~~The notifications Atlas DB user is overprivileged~~ — **done**: scoped from `atlasAdmin`/`admin` to `readWrite`/`jobcopilot_notifications`, applied and verified against production (a real submitted application's notification document confirmed written with the scoped credential). See `terraform/atlas/README.md`.
 - ~~Publication of this repo is paused~~ — **done**: repo is public, history rewritten, see interlude item C.
 - ~~Portfolio `repoUrl` is `null`~~ — **done**: set in `my-portfolio/data/buildProjects.js`, pushed.
