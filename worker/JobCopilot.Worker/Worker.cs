@@ -39,7 +39,25 @@ public class Worker : BackgroundService
         _connection = await ConnectWithRetryAsync(factory, stoppingToken);
         _channel = _connection.CreateModel();
 
-        _channel.QueueDeclare("match-requests", durable: true, exclusive: false, autoDelete: false);
+        // Dead-letter setup: a nacked (requeue: false) message is routed here by
+        // RabbitMQ automatically once the queue carries x-dead-letter-exchange -
+        // no change needed to the nack call itself. Must match
+        // RabbitMqPublisher.cs's declaration of the same queue exactly, since both
+        // the publisher and this consumer declare match-requests.
+        _channel.ExchangeDeclare("match-requests.dlx", ExchangeType.Fanout, durable: true);
+        _channel.QueueDeclare("match-requests.dlq", durable: true, exclusive: false, autoDelete: false);
+        _channel.QueueBind("match-requests.dlq", "match-requests.dlx", routingKey: "");
+        _channel.QueueDeclare("match-requests", durable: true, exclusive: false, autoDelete: false,
+            arguments: new Dictionary<string, object> { { "x-dead-letter-exchange", "match-requests.dlx" } });
+
+        // See MatchProcessingEvent.cs for why this is a separate direct queue, not
+        // the match-completed-fanout exchange. Must match MatchCompletedConsumer.cs's
+        // declaration of the same queue exactly.
+        _channel.ExchangeDeclare("match-processing.dlx", ExchangeType.Fanout, durable: true);
+        _channel.QueueDeclare("match-processing.dlq", durable: true, exclusive: false, autoDelete: false);
+        _channel.QueueBind("match-processing.dlq", "match-processing.dlx", routingKey: "");
+        _channel.QueueDeclare("match-processing", durable: true, exclusive: false, autoDelete: false,
+            arguments: new Dictionary<string, object> { { "x-dead-letter-exchange", "match-processing.dlx" } });
 
         // MatchCompletedEvent has more than one independent subscriber (the API, for
         // SignalR, and - as of Project 2 - the notifications service), so this is a
@@ -74,9 +92,10 @@ public class Worker : BackgroundService
                 //
                 // requeue: false is deliberate. Requeuing sends the same poison message
                 // straight back to the only consumer, which fails on it again in a tight
-                // loop. Dropping it costs one match; requeuing costs every future match.
-                // A dead-letter queue is the real answer and is listed as a known gap.
-                _logger.LogError(ex, "Error processing message - dropping it (not requeued)");
+                // loop. RabbitMQ routes a nacked, non-requeued message to
+                // match-requests.dlx (declared above) automatically - it isn't lost,
+                // it's parked in match-requests.dlq for inspection/replay.
+                _logger.LogError(ex, "Error processing message - dead-lettering it (not requeued)");
                 try
                 {
                     _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
@@ -179,6 +198,9 @@ public class Worker : BackgroundService
 
         app.MatchResult.Status = MatchStatus.Processing;
         await db.SaveChangesAsync();
+        // Previously this transition was written to the database and nothing else -
+        // the UI could show "Analysing" but could never actually be pushed into it.
+        PublishProcessing(new MatchProcessingEvent(app.Id, app.UserId));
 
         try
         {
@@ -213,6 +235,15 @@ public class Worker : BackgroundService
                 app.Id, app.UserId, nameof(MatchStatus.Failed), null, null,
                 app.MatchResult.CompletedAt));
         }
+    }
+
+    private void PublishProcessing(MatchProcessingEvent evt)
+    {
+        var json = JsonSerializer.Serialize(evt);
+        var body = Encoding.UTF8.GetBytes(json);
+        var props = _channel!.CreateBasicProperties();
+        props.Persistent = true;
+        _channel.BasicPublish("", "match-processing", props, body);
     }
 
     private void PublishCompleted(MatchCompletedEvent evt)

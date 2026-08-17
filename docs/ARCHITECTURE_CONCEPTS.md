@@ -1116,3 +1116,79 @@ boundary.
   (Step 34), reused for a third time now that it's a proven pattern in this codebase.
 - `notifications/k8s/` — a self-contained local `kind` manifest set (own throwaway Mongo/RabbitMQ
   plus the real service image), the roadmap's card-free substitute for managed Kubernetes.
+
+## Post-launch reliability pass — dead-letter queues, the reachable "Analysing" state, dashboards
+
+### Architectural Viewpoint & Arguments
+
+**Dead-lettering is a queue-level contract, not an application-level retry.** Every consumer in
+this system already nacked poison messages with `requeue: false` (Step 31, the interlude's bug
+audit) — the right call, since requeuing a message that failed processing sends it straight back
+to the only consumer, which fails on it again, forever. What that left unsolved was that
+`requeue: false` alone means RabbitMQ just discards the message — correct behavior, but silent
+data loss with no way to inspect or replay what went wrong. A dead-letter exchange changes
+nothing about *when* a message is dropped from its original queue; it changes what "dropped"
+means, by giving RabbitMQ somewhere to route it instead of destroying it. That's configured
+entirely at the queue-declaration level (`x-dead-letter-exchange`), not in the nack call itself —
+the existing `catch`/nack code in every consumer needed zero changes. Each queue gets its own
+`<queue>.dlx`/`<queue>.dlq` rather than one shared poison queue, so a dead-lettered message stays
+next to messages of the same shape (a `match-requests.dlq` entry is a `MatchRequestedEvent`, not
+a mixed bag), which is what makes replay actually practical later.
+
+**The one real deployment wrinkle**: RabbitMQ treats queue arguments as part of a queue's
+identity — redeclaring an existing queue with a different `x-dead-letter-exchange` throws
+`PRECONDITION_FAILED` rather than updating it in place. This isn't a design flaw to work around
+in code; it's the same reasoning as an immutable infrastructure resource. The fix is operational,
+not architectural: delete the three affected queues once (via the management UI, which doesn't
+touch messages already routed elsewhere) before the new code's first deploy. Confirmed by hitting
+it directly against local dev RabbitMQ, which had stale queues from prior sessions — the exact
+scenario the VPS will be in on first deploy of this change.
+
+**The `Analysing` fix is a scoping decision, not a plumbing one.** The tempting shortcut was
+reusing `MatchCompletedEvent`/`match-completed-fanout` for the `Processing` transition too — it's
+already fanned out, already consumed by the API, done. The reason not to: that fanout also
+reaches the notifications service, whose entire job is "write a record when a match event
+arrives." A `Processing` event landing there would write a real, persisted, misleading
+notification document for a match that hasn't finished — a correctness bug, not a style
+preference. `MatchProcessingEvent` is a new type and a new direct queue specifically so a
+non-terminal state can never reach a subscriber that only makes sense for terminal ones. It's a
+direct queue, not a second fanout exchange, for the same reason `match-requests` is a direct
+queue: exactly one subscriber needs it today, and this project already learned (Project 2, the
+fanout bug) that a fanout is the right call *once a second subscriber exists*, not preemptively.
+
+**The frontend needed nothing new because it was already built generically.** `applyMatchPush`
+patches whatever status string a push carries, and `parseStatus` already listed `'Processing'` as
+a valid value — both written during the interlude's modernisation pass, before this specific gap
+was even being worked on. That's the payoff of the interlude's earlier decision to carry complete
+state in the push event rather than partial state plus a refetch: the shape was already right for
+a state nobody was sending yet.
+
+### Plain-Language Definitions
+
+- **Dead-letter exchange (DLX) / dead-letter queue (DLQ)** — an exchange a queue is configured to
+  route a message to instead of discarding it, when that message is rejected (nacked without
+  requeue) or expires. The DLQ is just an ordinary durable queue bound to that exchange — nothing
+  RabbitMQ-magic about it, just a second destination for messages that would otherwise vanish.
+- **Queue argument immutability** — RabbitMQ queues are identified by name *and* their declared
+  arguments together; two declarations of the same name with different arguments are treated as
+  conflicting, not as an update. This is why adding a DLX to an existing queue needs a delete
+  first, the same class of constraint as changing an immutable field on a cloud resource.
+
+### File Mapping
+
+- `worker/JobCopilot.Worker/Worker.cs` — DLX/DLQ declarations for `match-requests` and the new
+  `match-processing`; publishes `MatchProcessingEvent` right after writing `Processing` to the
+  database, before the Gemini call.
+- `api/JobCopilot.Api/Messaging/RabbitMqPublisher.cs` — matching DLX/DLQ declaration for
+  `match-requests` (must agree exactly with the worker's, since both declare the same queue).
+- `api/JobCopilot.Api/Messaging/MatchCompletedConsumer.cs` — DLX/DLQ for `match-completed-api`;
+  a second, independent consumer on `match-processing`, relaying to the same `MatchCompleted`
+  SignalR method with `Status="Processing"` and null score/analysis/completedAt.
+- `api/JobCopilot.Contracts/Messaging/MatchProcessingEvent.cs` — the new, deliberately separate
+  event type; see its own doc comment for why it isn't `MatchCompletedEvent`.
+- `notifications/src/rabbitmq.ts` — DLX/DLQ for `match-completed-notifications`.
+- `observability/grafana/jobcopilot-overview.json`, `observability/grafana/README.md` — a
+  standard exportable Grafana dashboard over what `observability/alloy/config.alloy` already
+  ships (host + container metrics, container logs), manually imported rather than
+  Terraform-managed (no Grafana Cloud service account token available this session — see the
+  README's own note on what a `terraform/grafana` module would need).

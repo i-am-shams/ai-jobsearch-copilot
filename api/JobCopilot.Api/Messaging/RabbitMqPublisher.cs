@@ -16,6 +16,8 @@ namespace JobCopilot.Api.Messaging;
 public class RabbitMqPublisher : IMessagePublisher, IDisposable
 {
     private const string QueueName = "match-requests";
+    private const string DeadLetterExchange = "match-requests.dlx";
+    private const string DeadLetterQueue = "match-requests.dlq";
     private readonly IConfiguration _config;
     private IConnection? _connection;
     private IModel? _channel;
@@ -43,7 +45,17 @@ public class RabbitMqPublisher : IMessagePublisher, IDisposable
 
             _connection = factory.CreateConnection();
             _channel = _connection.CreateModel();
-            _channel.QueueDeclare(QueueName, durable: true, exclusive: false, autoDelete: false);
+
+            // Dead-letter setup must match Worker.cs's declaration of the same queue
+            // exactly (RabbitMQ rejects a redeclare with different arguments), since
+            // both the publisher and the consumer declare match-requests. See
+            // Worker.cs for why poison messages need a DLQ rather than just being
+            // dropped on nack.
+            _channel.ExchangeDeclare(DeadLetterExchange, ExchangeType.Fanout, durable: true);
+            _channel.QueueDeclare(DeadLetterQueue, durable: true, exclusive: false, autoDelete: false);
+            _channel.QueueBind(DeadLetterQueue, DeadLetterExchange, routingKey: "");
+            _channel.QueueDeclare(QueueName, durable: true, exclusive: false, autoDelete: false,
+                arguments: new Dictionary<string, object> { { "x-dead-letter-exchange", DeadLetterExchange } });
         }
     }
 

@@ -3,6 +3,8 @@ import { config } from './config.js';
 
 const EXCHANGE = 'match-completed-fanout';
 const QUEUE = 'match-completed-notifications';
+const DLX = 'match-completed-notifications.dlx';
+const DLQ = 'match-completed-notifications.dlq';
 
 let connection: ChannelModel | undefined;
 let channel: Channel | undefined;
@@ -49,7 +51,15 @@ export async function startConsuming(
   // own durable queue here means we get every message regardless of what
   // the API is doing, and vice versa.
   await channel.assertExchange(EXCHANGE, 'fanout', { durable: true });
-  await channel.assertQueue(QUEUE, { durable: true });
+
+  // Dead-letter setup: a nacked (requeue=false) message routes here
+  // automatically once the queue carries x-dead-letter-exchange - identical
+  // pattern to Worker.cs's match-requests.dlx and
+  // MatchCompletedConsumer.cs's match-completed-api.dlx.
+  await channel.assertExchange(DLX, 'fanout', { durable: true });
+  await channel.assertQueue(DLQ, { durable: true });
+  await channel.bindQueue(DLQ, DLX, '');
+  await channel.assertQueue(QUEUE, { durable: true, arguments: { 'x-dead-letter-exchange': DLX } });
   await channel.bindQueue(QUEUE, EXCHANGE, '');
   await channel.prefetch(1);
 
@@ -75,10 +85,9 @@ export async function startConsuming(
         .catch((err) => {
           // Same reasoning as Worker.cs's consumer: nack with requeue=false.
           // A poison message that gets requeued goes straight back to the
-          // only consumer and fails again in a tight loop; dropping it costs
-          // one notification, requeuing costs every future one. A
-          // dead-letter queue is the real fix and is a known gap here too.
-          console.error('[rabbitmq] error handling message, dropping it (not requeued):', err);
+          // only consumer and fails again in a tight loop; dead-lettered to
+          // match-completed-notifications.dlq rather than lost.
+          console.error('[rabbitmq] error handling message, dead-lettering it (not requeued):', err);
           activeChannel.nack(msg, false, false);
         });
     },

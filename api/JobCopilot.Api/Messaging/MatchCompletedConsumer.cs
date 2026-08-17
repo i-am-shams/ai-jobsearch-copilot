@@ -46,7 +46,15 @@ public class MatchCompletedConsumer : BackgroundService
         // is also subscribed - sharing one queue between independent consumers
         // would have RabbitMQ round-robin deliveries between them instead.
         _channel.ExchangeDeclare("match-completed-fanout", ExchangeType.Fanout, durable: true);
-        _channel.QueueDeclare("match-completed-api", durable: true, exclusive: false, autoDelete: false);
+
+        // Dead-letter setup: a nacked (requeue: false) message routes here
+        // automatically once the queue carries x-dead-letter-exchange - see
+        // Worker.cs's match-requests.dlx for the identical pattern.
+        _channel.ExchangeDeclare("match-completed-api.dlx", ExchangeType.Fanout, durable: true);
+        _channel.QueueDeclare("match-completed-api.dlq", durable: true, exclusive: false, autoDelete: false);
+        _channel.QueueBind("match-completed-api.dlq", "match-completed-api.dlx", routingKey: "");
+        _channel.QueueDeclare("match-completed-api", durable: true, exclusive: false, autoDelete: false,
+            arguments: new Dictionary<string, object> { { "x-dead-letter-exchange", "match-completed-api.dlx" } });
         _channel.QueueBind("match-completed-api", "match-completed-fanout", routingKey: "");
 
         var consumer = new EventingBasicConsumer(_channel);
@@ -66,8 +74,9 @@ public class MatchCompletedConsumer : BackgroundService
                 // limit is set on this channel, so an unacked message here stalls
                 // nothing, but it does leak an unacked delivery that is only ever
                 // released on reconnect. requeue: false for the same poison-message
-                // reason as the worker.
-                _logger.LogError(ex, "Error processing MatchCompletedEvent - dropping it (not requeued)");
+                // reason as the worker; dead-lettered to match-completed-api.dlq
+                // rather than lost.
+                _logger.LogError(ex, "Error processing MatchCompletedEvent - dead-lettering it (not requeued)");
                 try
                 {
                     _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
@@ -79,6 +88,41 @@ public class MatchCompletedConsumer : BackgroundService
             }
         };
         _channel.BasicConsume("match-completed-api", autoAck: false, consumer);
+
+        // Second, independent subscription on the same connection/channel: see
+        // MatchProcessingEvent.cs for why this is its own direct queue rather than
+        // folded into match-completed-fanout above.
+        _channel.ExchangeDeclare("match-processing.dlx", ExchangeType.Fanout, durable: true);
+        _channel.QueueDeclare("match-processing.dlq", durable: true, exclusive: false, autoDelete: false);
+        _channel.QueueBind("match-processing.dlq", "match-processing.dlx", routingKey: "");
+        _channel.QueueDeclare("match-processing", durable: true, exclusive: false, autoDelete: false,
+            arguments: new Dictionary<string, object> { { "x-dead-letter-exchange", "match-processing.dlx" } });
+
+        var processingConsumer = new EventingBasicConsumer(_channel);
+        processingConsumer.Received += async (_, ea) =>
+        {
+            try
+            {
+                var json = Encoding.UTF8.GetString(ea.Body.ToArray());
+                var evt = JsonSerializer.Deserialize<MatchProcessingEvent>(json)!;
+                await NotifyProcessing(evt);
+                _channel.BasicAck(ea.DeliveryTag, multiple: false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing MatchProcessingEvent - dead-lettering it (not requeued)");
+                try
+                {
+                    _channel.BasicNack(ea.DeliveryTag, multiple: false, requeue: false);
+                }
+                catch (Exception nackEx)
+                {
+                    _logger.LogError(nackEx, "Failed to nack MatchProcessingEvent");
+                }
+            }
+        };
+        _channel.BasicConsume("match-processing", autoAck: false, processingConsumer);
+
         _logger.LogInformation("MatchCompletedConsumer started and listening");
 
         await Task.Delay(Timeout.Infinite, stoppingToken);
@@ -109,6 +153,24 @@ public class MatchCompletedConsumer : BackgroundService
     {
         await _hub.Clients.Group(evt.UserId.ToString())
             .SendAsync("MatchCompleted", new { evt.ApplicationId, evt.Status, evt.MatchScore, evt.GapAnalysis, evt.CompletedAt });
+    }
+
+    // Reuses the "MatchCompleted" SignalR method rather than adding a new one:
+    // the frontend's push handler (applyMatchPush) already patches the cache
+    // generically off a status string, and only toasts on Completed/Failed, so a
+    // Processing push with null score/analysis/completedAt is already handled
+    // correctly with zero frontend changes.
+    private async Task NotifyProcessing(MatchProcessingEvent evt)
+    {
+        await _hub.Clients.Group(evt.UserId.ToString())
+            .SendAsync("MatchCompleted", new
+            {
+                evt.ApplicationId,
+                Status = nameof(MatchStatus.Processing),
+                MatchScore = (int?)null,
+                GapAnalysis = (string?)null,
+                CompletedAt = (DateTime?)null,
+            });
     }
 
     public override void Dispose()
