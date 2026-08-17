@@ -37,14 +37,15 @@ atlas_project_id  = "<Project Settings -> General -> Project ID>"
 
 ## Known gaps, named honestly
 
-- **The `iamshams_db_user` database user has `atlasAdmin` on the `admin`
-  database live** - i.e. full project-wide admin, not the scoped
-  `readWrite`-on-its-own-database role the notifications service actually
-  needs. Found during import (`terraform plan` showed the drift between an
-  assumed scoped role and this). Deliberately left matching reality rather
-  than silently tightened by this same change - narrowing a live
-  credential's privileges on a production database is a separate, explicit
-  decision, not something to fold into a Terraform-adoption pass.
+- ~~The `iamshams_db_user` database user has `atlasAdmin` on the `admin`
+  database live~~ - **fixed**: scoped to `readWrite` on `jobcopilot_notifications`
+  (confirmed as the real deployed database name via
+  `docker exec jobcopilot-notifications printenv MONGO_DB_NAME`, matching the
+  code default). `terraform plan` showed a clean single-field diff (only the
+  `roles` block), applied, then verified against production: submitted a real
+  application through the live site, confirmed the notifications service still
+  wrote a real document to Mongo with the now-scoped credential (queried Atlas
+  directly, matched on `applicationId`).
 - Only the VPS's own IP access list entry is imported/managed. Other
   ad-hoc entries added via Atlas's browser-based "Automate security setup"
   flow when the project was first created are not imported.

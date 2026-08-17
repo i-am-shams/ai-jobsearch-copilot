@@ -24,6 +24,15 @@
 
 **Last updated:** Polish-and-publish interlude fully complete, including publication (**C**) — the
 repo is now public. See **"Polish-and-publish interlude — status"** for the full A-F breakdown.
+**Every item in "Future Additions" below is now resolved** — dead-letter queues, the live
+`Analysing` status push, a Grafana dashboard, and the Atlas DB user scope-down are all done, each
+independently verified against real running infra (not just built). The Atlas fix is live and
+confirmed in production. **The other three are committed locally but deliberately not yet pushed**
+— `master`/`origin/master` do not currently match. This repo auto-deploys on push
+(Step 35), and three pre-existing RabbitMQ queues on the VPS need deleting via the management UI
+before the DLQ change can deploy without a crash-loop (RabbitMQ rejects redeclaring an existing
+queue with new arguments) — push is held until that's coordinated. See the DLQ entry in "Future
+Additions" for the exact queue names.
 **Project 2's first bounded context is live in production**: a Notifications service
 (`notifications/`, Node.js+TypeScript, own MongoDB Atlas) extracted off a newly fanout-exchanged
 RabbitMQ topology (a real bug — a second consumer silently splitting the API's messages — caught
@@ -36,8 +45,11 @@ this project's own containers only after a real bug (unscoped discovery was ship
 `<other-app>` app's data too, and its log backlog was silently dropping this project's own logs) was
 caught and fixed live. See **"Project 2 — microservices + cloud-native deploy"**.
 
-> ✅ **Everything is pushed and deployed.** `master` and `origin/master` match, CI/CD was green,
-> and the notifications + Alloy observability services are both live on the VPS. Real Terraform
+> ⚠️ **Not everything is pushed.** The Atlas DB user scope-down is live and verified in
+> production. Dead-letter queues, the `Analysing` status push, and the Grafana dashboard are
+> committed locally but held back pending a coordinated RabbitMQ queue deletion on the VPS (see
+> "Last updated" above) — `master` and `origin/master` currently diverge. Everything *else* below
+> (notifications + Alloy observability services) is live on the VPS from earlier work. Real Terraform
 > (`terraform/atlas`, `terraform/vps`) now covers Atlas and the VPS deploy path too, and
 > `docs/architecture.mmd`/`.png` (plus the root `README.md`) now draw the full picture —
 > notifications, the fanout exchange, Atlas, and Grafana Cloud all in one pass, as planned. **The
@@ -664,11 +676,14 @@ real data. Checked the cluster's live shape via a data source *before* writing t
 rather than assuming: Atlas has been silently auto-migrating shared-tier clusters to a newer "Flex"
 type since Jan 2025, and this one turned out not to have been (confirmed, not assumed).
 `terraform plan` after import caught three real drifts between assumed and actual config before
-anything was touched — including a genuine security finding, left deliberately unfixed here:
-**the notifications DB user has `atlasAdmin` on `admin`** (full project admin) instead of a scoped
-`readWrite` on just its own database. Named honestly in `terraform/atlas/README.md` as a real gap,
-not silently tightened — changing a live credential's privileges is a separate decision from
-adopting Terraform.
+anything was touched — including a genuine security finding, initially left deliberately unfixed
+(changing a live credential's privileges is a separate decision from adopting Terraform) and
+**since resolved**: the notifications DB user had `atlasAdmin` on `admin` (full project admin)
+instead of a scoped `readWrite` on just its own database. Fixed once the real deployed database
+name was confirmed (`jobcopilot_notifications`, via the running container's own env var) —
+`terraform plan` showed a clean single-field diff, applied, and verified against production by
+submitting a real application and confirming the notifications service still wrote its document
+with the now-scoped credential. See `terraform/atlas/README.md`.
 
 **`terraform/vps`**: replaces the manual "SSH in and hand-edit / re-upload deploy.sh" workflow with
 real `file` + `remote-exec` provisioners. Added `deploy/docker-compose.vps.yml` to the repo as a
@@ -756,7 +771,7 @@ counters, zero `*_failed_total`, and confirmed via `docker ps` that all 6 jobcop
 - ~~Failed matches don't push a live SignalR update~~ — **done** in the interlude's bug audit, verified live against an invalid Gemini key.
 - ~~`Analysing` is unreachable in the UI~~ — **done**: the worker now publishes `MatchProcessingEvent` (own direct queue, `match-processing` — deliberately not the `match-completed-fanout` exchange, since the notifications service must never see a non-terminal state) right after writing `Processing` to the database. The API relays it over the same `MatchCompleted` SignalR method the frontend already listened on generically (`applyMatchPush`/`parseStatus` already handled an arbitrary status string with null score/analysis/completedAt — zero frontend changes needed). **Live-verified in a real browser** (Playwright/Edge): registered a user, submitted an application, watched the status pill actually render the spinning "Analysing" state before the terminal push, zero page reloads, zero console errors.
 - ~~No dead-letter queue~~ — **done**: every consumer queue (`match-requests`, `match-completed-api`, `match-completed-notifications`, `match-processing`) now declares `x-dead-letter-exchange` pointing at its own `<queue>.dlx`/`<queue>.dlq`. The existing `nack(requeue: false)` calls needed no code change — RabbitMQ routes a dead-lettered message there automatically. **Live-verified**, not just built: published a malformed poison message directly to both `match-requests` and `match-completed-notifications` against local dev RabbitMQ, confirmed each landed in its `.dlq` fully intact (payload + RabbitMQ's own `x-death` headers showing why/when), and confirmed the origin queue drained to zero rather than stalling. One real migration gotcha hit locally and worth knowing before deploying: RabbitMQ rejects redeclaring an existing queue with new arguments (`PRECONDITION_FAILED`) — the three existing queues on the VPS will need deleting (via the management UI, not `docker exec`) before this code can start cleanly there, exactly like the stale local dev queues this session had to clear.
-- **The notifications Atlas DB user is overprivileged** (`atlasAdmin` on `admin`, not scoped `readWrite` on its own database) — found via `terraform plan` after import, see `terraform/atlas/README.md`. Narrowing it is a real, live-credential change, deliberately not folded into the Terraform-adoption pass itself.
+- ~~The notifications Atlas DB user is overprivileged~~ — **done**: scoped from `atlasAdmin`/`admin` to `readWrite`/`jobcopilot_notifications`, applied and verified against production (a real submitted application's notification document confirmed written with the scoped credential). See `terraform/atlas/README.md`.
 - ~~Publication of this repo is paused~~ — **done**: repo is public, history rewritten, see interlude item C.
 - ~~Portfolio `repoUrl` is `null`~~ — **done**: set in `my-portfolio/data/buildProjects.js`, pushed.
 - ~~Prompt-injection hardening~~ — **done, Step 30.**

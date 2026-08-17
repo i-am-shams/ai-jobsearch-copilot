@@ -61,14 +61,20 @@ resource "mongodbatlas_project_ip_access_list" "vps" {
 # Terraform is aware of the user (and would flag if its roles/scopes drift),
 # without being able to silently change its password.
 #
-# SECURITY GAP FOUND, NOT YET FIXED (see docs/HANDOVER.md): this matches the
-# role the user actually has live - atlasAdmin on the admin database, i.e.
-# full project-wide admin - not the scoped readWrite-on-its-own-database
-# role the notifications service actually needs. Deliberately left matching
-# reality here rather than silently tightening it: changing a live
+# SECURITY GAP FIXED: previously matched the role the user actually had live -
+# atlasAdmin on the admin database, i.e. full project-wide admin - rather than
+# the scoped readWrite-on-its-own-database role the notifications service
+# actually needs (it only ever does db.collection('notifications').insertOne
+# and .createIndex - see notifications/src/handler.ts, mongo.ts). Left
+# matching reality (not silently tightened) for one full session while the
+# real database name was confirmed against the live deployment
+# (docker exec jobcopilot-notifications printenv MONGO_DB_NAME ->
+# jobcopilot_notifications, matching the code default) - changing a live
 # credential's privileges on a shared production database is a real action
-# with real blast-radius-to-decide, not something to fold into an unrelated
-# Terraform-adoption pass without a separate, explicit go-ahead.
+# with real blast-radius, not something to fold into an unrelated
+# Terraform-adoption pass without a separate, explicit go-ahead. auth_database_name
+# stays "admin" - that's where Atlas stores SCRAM credentials regardless of which
+# database a user's roles grant access to, not something this change touches.
 resource "mongodbatlas_database_user" "notifications" {
   project_id         = var.atlas_project_id
   username           = "iamshams_db_user"
@@ -76,8 +82,8 @@ resource "mongodbatlas_database_user" "notifications" {
   auth_database_name = "admin"
 
   roles {
-    role_name     = "atlasAdmin"
-    database_name = "admin"
+    role_name     = "readWrite"
+    database_name = "jobcopilot_notifications"
   }
 
   lifecycle {
