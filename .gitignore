@@ -7,6 +7,10 @@ dist/
 *.log
 logs/
 
+# Personal, kept out of the public repo deliberately - see docs/HANDOVER.md
+# "Portfolio repoUrl" / publication notes.
+docs/Full_Stack_Developer_Transition_Roadmap.md
+
 # Terraform: state can contain resource attributes considered sensitive
 # (e.g. Atlas connection details), and *.tfvars is where real credentials
 # (Atlas API keys, the VPS SSH key path) live locally - same discipline as
