@@ -1,10 +1,13 @@
 # AI Job-Search Copilot — Project Handover / State Doc
 
-> **Placeholders in this document.** This repository is written to be publishable
-> (publication itself is currently paused - see the interlude notes). Anything that
-> identifies the specific server or the unrelated production app that shares it
-> has been replaced with a placeholder, while every architectural decision and
-> lesson is kept verbatim — the reasoning is the point, the hostnames are not.
+> **Placeholders in this document.** This repository is public. Anything that
+> identifies the SSH username or the unrelated production app that shares this
+> server has been replaced with a placeholder, in both the working tree and
+> git history, while every architectural decision and lesson is kept verbatim
+> — the reasoning is the point, not those specific values. The VPS's address
+> is a real, committed value throughout, deliberately — it's already
+> discoverable from the live domain's own DNS, so hiding it has no real
+> security value.
 >
 > | Placeholder | Means |
 > |---|---|
@@ -19,8 +22,8 @@
 
 > **Purpose:** this file is the single source of truth for project state across chat sessions. Any new Claude session should read this file first before continuing the build. Update it after every completed step.
 
-**Last updated:** Polish-and-publish interlude complete except publication (**C**, still on hold
-by decision). See **"Polish-and-publish interlude — status"** for the full A-F breakdown.
+**Last updated:** Polish-and-publish interlude fully complete, including publication (**C**) — the
+repo is now public. See **"Polish-and-publish interlude — status"** for the full A-F breakdown.
 **Project 2's first bounded context is live in production**: a Notifications service
 (`notifications/`, Node.js+TypeScript, own MongoDB Atlas) extracted off a newly fanout-exchanged
 RabbitMQ topology (a real bug — a second consumer silently splitting the API's messages — caught
@@ -37,8 +40,8 @@ caught and fixed live. See **"Project 2 — microservices + cloud-native deploy"
 > and the notifications + Alloy observability services are both live on the VPS. Real Terraform
 > (`terraform/atlas`, `terraform/vps`) now covers Atlas and the VPS deploy path too, and
 > `docs/architecture.mmd`/`.png` (plus the root `README.md`) now draw the full picture —
-> notifications, the fanout exchange, Atlas, and Grafana Cloud all in one pass, as planned. The
-> repo is **still private** — see interlude item C. **Project 2's roadmap items are now all done**;
+> notifications, the fanout exchange, Atlas, and Grafana Cloud all in one pass, as planned. **The
+> repo is now public** — see interlude item C. **Project 2's roadmap items are now all done**;
 > see "Project 2 — microservices + cloud-native deploy" for the full detail on each.
 
 ## 🚀 LIVE DEPLOYMENT
@@ -464,19 +467,46 @@ Also removed four unreferenced Vite template assets (`hero.png`, `react.svg`, `v
 **Still open, named honestly:** `Analysing` is written to the database, but nothing pushes on
 `Pending -> Processing`, so **the UI renders a state it can never actually reach.**
 
-### C. Docs sanitized — publication deliberately paused
+### C. Docs sanitized, history rewritten, repo public — done
 
-Sanitization is **done and pushed**: the VPS address, the SSH username, the co-hosted app's
-name, its nginx container and network names, its config filename and its own health-check
-subdomain are all placeholders now, with a legend at the top of both docs. Every
-architectural lesson is intact and reads as before.
+Sanitization covers the SSH username, the co-hosted app's name, its nginx container and
+network names, its config filename and its own health-check subdomain — all placeholders
+now, with a legend at the top of `HANDOVER.md`. The VPS address is the one exception, kept
+real and committed throughout: it's already discoverable from the live domain's own DNS, so
+hiding it has no real security value. Every architectural lesson is intact and reads as
+before.
 
-**Publication is on hold by explicit decision.** Sanitizing the working tree does **not**
-remove the address and username from git history — both remain recoverable via `git log -S`
-on the two commits that introduced them. Re-verified while doing this: history contains **no
-API keys, no private keys and no tokens**. Resuming means either accepting that (the address
-is DNS-discoverable from the live domain anyway) or rewriting history first.
-`gh repo edit --visibility public` has **not** been run. The repo is still private.
+**A second, later pass was needed before actually publishing.** The first sanitization commit
+(Aug 13) only covered `HANDOVER.md`/`ARCHITECTURE_CONCEPTS.md` as they existed then. Project 2
+and the Terraform work (both later) reintroduced real values that pass never saw: the
+co-hosted app's real name back in `HANDOVER.md`'s Project 2 section, and — the more serious
+one — the co-hosted app's real Docker network name as a functional literal in
+`deploy/docker-compose.vps.yml`, the file Terraform pushes verbatim to the VPS on every
+`apply`. That one couldn't just be placeholder-replaced without breaking the real deployment
+(the frontend container's join to the co-hosted nginx would fail), so it's now the literal
+token `__OTHER_APP_NETWORK_NAME__`, substituted at `apply` time via a targeted `replace()` in
+`terraform/vps/main.tf` from a required, gitignored `terraform.tfvars` variable — verified
+against a real `terraform plan` as a content-hash-only change, nothing else about the managed
+resource shifted. `terraform/vps/variables.tf`'s SSH-username default (also a real, committed
+value that pass had missed) lost its default the same way, now required via `terraform.tfvars`
+too.
+
+**History was rewritten** (`git-filter-repo`), not just the working tree — both for the
+original two commits this section used to flag, and for the newer commits that reintroduced
+the app name. Covered commit messages as well as file content (one commit's own message
+literally named the app it was fixing — caught and reworded before finalizing). Re-verified
+clean after rewriting: no app name, no SSH username, no API keys, no private keys, no tokens,
+anywhere in history, and the file list matches the pre-rewrite tree except for the one file
+meant to be gone (see below).
+
+**The transition roadmap doc stays private, everything else is public.** Only
+`docs/Full_Stack_Developer_Transition_Roadmap.md` was deliberately kept out — it's personal
+career-planning content, not architecture — stripped from git history the same way, gitignored
+going forward, kept locally outside the repo as a backup.
+`ARCHITECTURE_CONCEPTS.md`, `architecture.mmd`/`.png`, and everything else are public as-is.
+
+`gh repo edit --visibility public` has been run. **The repo is public.**
+`my-portfolio/data/buildProjects.js`'s `repoUrl` now points at it.
 
 ### D. Portfolio updated — done
 
@@ -727,8 +757,8 @@ counters, zero `*_failed_total`, and confirmed via `docker ps` that all 6 jobcop
 - **`Analysing` is unreachable in the UI.** `Processing` is written to the database, but nothing pushes on `Pending -> Processing`, so the status pill can render a state the user can never actually see. Needs either a third event or a status-change push.
 - **No dead-letter queue.** Poison messages are now nacked with `requeue: false`, which drops them rather than stalling the worker — correct, but the message is gone. A DLQ is the real fix.
 - **The notifications Atlas DB user is overprivileged** (`atlasAdmin` on `admin`, not scoped `readWrite` on its own database) — found via `terraform plan` after import, see `terraform/atlas/README.md`. Narrowing it is a real, live-credential change, deliberately not folded into the Terraform-adoption pass itself.
-- **Publication of this repo is paused** — see interlude item C for the history question.
-- **Portfolio `repoUrl` is `null`** in `my-portfolio/data/buildProjects.js`; set it to surface the Source link once this repo is public.
+- ~~Publication of this repo is paused~~ — **done**: repo is public, history rewritten, see interlude item C.
+- ~~Portfolio `repoUrl` is `null`~~ — **done**: set in `my-portfolio/data/buildProjects.js`, pushed.
 - ~~Prompt-injection hardening~~ — **done, Step 30.**
 - ~~Diagnostic logging cleanup in `Worker.cs`~~ — **done, Step 31.**
 - ~~RabbitMQ connection retry-with-backoff~~ — **done, Step 31, live-tested against a real outage.**
